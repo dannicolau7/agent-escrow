@@ -61,7 +61,8 @@ app.add_middleware(
 )
 app.include_router(ui_router)
 
-_WEB_DIR = Path(__file__).parent.parent / "web"
+_WEB_OUT = Path(__file__).parent.parent / "web" / "out"
+_WEB_DIR = _WEB_OUT if _WEB_OUT.exists() else Path(__file__).parent.parent / "web"
 app.mount("/ui", StaticFiles(directory=str(_WEB_DIR), html=True), name="ui")
 
 

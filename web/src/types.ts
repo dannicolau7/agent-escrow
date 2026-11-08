@@ -1,0 +1,13 @@
+export interface EscrowAction {
+  id: string
+  rpc_id: string
+  tool_name: string
+  category: string
+  risk_level: 'CRITICAL' | 'HIGH' | 'MEDIUM' | 'LOW'
+  reason: string | null
+  raw_arguments: Record<string, unknown>
+  status: string
+  rejection_reason: string | null
+  created_at: string
+  resolved_at: string | null
+}
