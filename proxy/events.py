@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import Any, AsyncGenerator
+from collections.abc import AsyncGenerator
+from typing import Any
 
 _subscribers: list[asyncio.Queue] = []
 
@@ -26,7 +27,7 @@ async def subscribe() -> AsyncGenerator[str, None]:
             try:
                 payload = await asyncio.wait_for(q.get(), timeout=15.0)
                 yield f"data: {payload}\n\n"
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 yield ": ping\n\n"  # keep-alive comment; prevents proxy timeouts
     finally:
         try:

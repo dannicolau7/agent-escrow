@@ -1,4 +1,5 @@
 """Regression tests for the issues found in the security audit."""
+
 from __future__ import annotations
 
 import asyncio
@@ -14,7 +15,6 @@ from proxy import db, proxy_engine, settings
 from proxy.config import classify_tool_call
 from proxy.main import app
 from proxy.proxy_engine import EXECUTION_WAITERS, process_mcp_call
-
 
 
 @pytest_asyncio.fixture
@@ -48,9 +48,11 @@ async def _wait_for_pending(client, n=1, headers=None):
 
 # --- 1. Approval during slow notifications is not lost --------------------------
 
+
 async def test_approval_during_slow_notification_executes(client, monkeypatch):
     async def slow_notify(**kw):
         await asyncio.sleep(1.0)
+
     monkeypatch.setattr(proxy_engine, "notify_action_added", slow_notify)
 
     task = asyncio.create_task(process_mcp_call(_call("delete_user", {"id": 1}, rpc_id=7), timeout=3.0))
@@ -58,7 +60,7 @@ async def test_approval_during_slow_notification_executes(client, monkeypatch):
     r = await client.post("/api/resolve", json={"action_id": rows[0]["id"], "decision": "APPROVED"})
     assert r.status_code == 200
 
-    result = await asyncio.wait_for(task, timeout=2.0)   # must not wait for the notification
+    result = await asyncio.wait_for(task, timeout=2.0)  # must not wait for the notification
     assert "result" in result, result
     row = db.get_action(rows[0]["id"])
     assert row["status"] == "APPROVED"
@@ -67,11 +69,14 @@ async def test_approval_during_slow_notification_executes(client, monkeypatch):
 
 # --- 2. Agent's escrow key is not forwarded (see also test_mcp_forwarding) -------
 
+
 async def test_no_client_credentials_forwarded_without_upstream_token(client, monkeypatch):
     seen = {}
+
     def handler(req):
         seen.update(req.headers)
         return httpx.Response(200, json={"jsonrpc": "2.0", "id": 1, "result": {}})
+
     monkeypatch.setenv("MCP_UPSTREAM_URL", "http://up/mcp")
     forwarder_module._test_transport = httpx.MockTransport(handler)
     await client.post("/mcp", json=_call("get_user"), headers={"Authorization": "Bearer agent-secret"})
@@ -79,6 +84,7 @@ async def test_no_client_credentials_forwarded_without_upstream_token(client, mo
 
 
 # --- 3. Unknown methods are refused and audited ----------------------------------
+
 
 async def test_unknown_method_refused(client, monkeypatch):
     called = []
@@ -97,6 +103,7 @@ async def test_notification_gets_202(client):
 
 # --- 4. Production mode never fails open -----------------------------------------
 
+
 async def test_production_without_keys_refuses_requests(client, monkeypatch):
     monkeypatch.setenv("ESCROW_MODE", "production")
     r = await client.get("/api/pending")
@@ -114,6 +121,7 @@ def test_production_startup_requires_keys_and_upstream(monkeypatch):
 
 # --- 5. No silent mock in production ---------------------------------------------
 
+
 async def test_no_mock_result_in_production(monkeypatch):
     monkeypatch.setenv("ESCROW_MODE", "production")
     monkeypatch.delenv("MCP_UPSTREAM_URL", raising=False)
@@ -123,18 +131,34 @@ async def test_no_mock_result_in_production(monkeypatch):
 
 # --- 6. Classifier ----------------------------------------------------------------
 
-@pytest.mark.parametrize("name", [
-    "get_and_remove_user", "read_and_erase_disk", "list_and_kill_pods",
-    "getAndDeleteUser", "get_user_delete", "search_then_wipe",
-])
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "get_and_remove_user",
+        "read_and_erase_disk",
+        "list_and_kill_pods",
+        "getAndDeleteUser",
+        "get_user_delete",
+        "search_then_wipe",
+    ],
+)
 def test_classifier_bypasses_are_held(name):
     assert classify_tool_call(name)["action"] == "HOLD", name
 
 
-@pytest.mark.parametrize("name", [
-    "get_credit_score", "get_payment_status", "list_dropdown_options",
-    "read_email", "get_post", "getUser", "describe-table",
-])
+@pytest.mark.parametrize(
+    "name",
+    [
+        "get_credit_score",
+        "get_payment_status",
+        "list_dropdown_options",
+        "read_email",
+        "get_post",
+        "getUser",
+        "describe-table",
+    ],
+)
 def test_classifier_reads_not_held(name):
     assert classify_tool_call(name)["action"] == "AUTO_APPROVE", name
 
@@ -147,6 +171,7 @@ def test_classifier_risk_levels():
 
 
 # --- Forwarding: SSE, sessions, failures ------------------------------------------
+
 
 async def test_sse_upstream_response_parsed_and_session_returned(client, monkeypatch):
     sse = (
@@ -192,6 +217,7 @@ async def test_auto_approved_calls_are_audited(client):
 
 # --- Auth details -----------------------------------------------------------------
 
+
 async def test_query_key_only_on_sse(client, monkeypatch):
     monkeypatch.setenv("ESCROW_KEYS", "v:viewer:k2")
     assert (await client.get("/api/pending?api_key=k2")).status_code == 401
@@ -224,6 +250,7 @@ async def test_viewer_cannot_export_audit(client, monkeypatch):
 
 # --- Audit chain ------------------------------------------------------------------
 
+
 async def test_audit_chain_detects_tampering(client):
     for i in range(3):
         db.insert_audit_log("test.event", detail={"i": i})
@@ -237,6 +264,7 @@ async def test_audit_chain_detects_tampering(client):
 
 # --- Notifications ----------------------------------------------------------------
 
+
 async def test_slack_escapes_mentions_and_pagerduty_resolves(client, monkeypatch):
     monkeypatch.setenv("SLACK_WEBHOOK_URL", "http://slack/hook")
     monkeypatch.setenv("PAGERDUTY_ROUTING_KEY", "pd")
@@ -244,7 +272,9 @@ async def test_slack_escapes_mentions_and_pagerduty_resolves(client, monkeypatch
     notif_module._test_transport = httpx.MockTransport(
         lambda r: sent.append((str(r.url), r.content.decode())) or httpx.Response(200)
     )
-    task = asyncio.create_task(client.post("/mcp", json=_call("delete_user", {"reason": "<!channel> click <http://x|here>"})))
+    task = asyncio.create_task(
+        client.post("/mcp", json=_call("delete_user", {"reason": "<!channel> click <http://x|here>"}))
+    )
     rows = await _wait_for_pending(client)
     await client.post("/api/resolve", json={"action_id": rows[0]["id"], "decision": "REJECTED"})
     await task
@@ -255,6 +285,7 @@ async def test_slack_escapes_mentions_and_pagerduty_resolves(client, monkeypatch
 
 
 # --- Metrics ----------------------------------------------------------------------
+
 
 async def test_metrics_histogram(client):
     text = (await client.get("/metrics")).text

@@ -15,7 +15,6 @@ from .events import broadcast
 from .forwarder import forward_full
 from .logs import log
 from .proxy_engine import process_mcp_call
-
 from .routes_ui import router as ui_router
 
 # MCP methods that are passed straight through without escrow.  These are the
@@ -111,9 +110,7 @@ async def handle_mcp(request: Request):
 
     if method != "tools/call":
         if not (method in PASSTHROUGH_METHODS or method.startswith("notifications/")):
-            db.insert_audit_log(
-                "rpc.refused", actor=submitter, ip_address=client_ip, detail={"method": method}
-            )
+            db.insert_audit_log("rpc.refused", actor=submitter, ip_address=client_ip, detail={"method": method})
             log.warning("rpc.refused", extra={"method": method, "actor": submitter})
             return _rpc_error(rpc_id, -32601, f"Method not allowed through escrow: {method}")
 

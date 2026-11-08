@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
-from typing import Any, Set
+from typing import Any
 
 import httpx
 
@@ -19,7 +19,7 @@ _RISK_TO_PD_SEVERITY = {"CRITICAL": "critical", "HIGH": "error", "MEDIUM": "warn
 _MAX_TEXT = 500
 
 # Background notification tasks (kept so they aren't garbage-collected).
-_tasks: Set[asyncio.Task] = set()
+_tasks: set[asyncio.Task] = set()
 
 
 def _slack_escape(text: Any) -> str:
@@ -47,7 +47,9 @@ async def _post(client: httpx.AsyncClient, channel: str, url: str, payload: dict
     try:
         resp = await client.post(url, json=payload)
         if resp.status_code >= 400:
-            log.warning("notification.failed", extra={"channel": channel, "action_id": action_id, "status": resp.status_code})
+            log.warning(
+                "notification.failed", extra={"channel": channel, "action_id": action_id, "status": resp.status_code}
+            )
     except Exception as exc:  # never let a webhook break the escrow flow
         log.warning("notification.failed", extra={"channel": channel, "action_id": action_id, "error": str(exc)})
 
@@ -90,7 +92,14 @@ async def notify_action_resolved(
         await asyncio.gather(
             _pagerduty_resolve(client, action_id),
             _webhook(
-                client, "action.resolved", action_id, tool_name, None, None, None, None,
+                client,
+                "action.resolved",
+                action_id,
+                tool_name,
+                None,
+                None,
+                None,
+                None,
                 extra={"status": status, "resolved_by": resolved_by},
             ),
         )
@@ -122,7 +131,10 @@ async def _slack(client, action_id, tool_name, risk_level, category, reason, das
     }
     if reason and reason != "No justification provided by agent.":
         payload["blocks"].append(
-            {"type": "section", "text": {"type": "mrkdwn", "text": f"*Agent reason (unverified):* {_slack_escape(reason)}"}}
+            {
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": f"*Agent reason (unverified):* {_slack_escape(reason)}"},
+            }
         )
     payload["blocks"].append(
         {
@@ -146,9 +158,7 @@ async def _webhook(client, event, action_id, tool_name, risk_level, category, re
         return
     payload = {"event": event, "action_id": action_id, "tool_name": tool_name}
     if event == "action.held":
-        payload.update(
-            risk_level=risk_level, category=category, reason=reason, dashboard_url=dashboard_url
-        )
+        payload.update(risk_level=risk_level, category=category, reason=reason, dashboard_url=dashboard_url)
     payload.update(extra or {})
     await _post(client, "webhook", url, payload, action_id)
 

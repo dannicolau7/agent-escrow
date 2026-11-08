@@ -6,10 +6,10 @@ ESCROW_MODE
     "dev" — no keys means open access, and a missing MCP_UPSTREAM_URL returns
     mock results.  `python -m proxy` and the test suite set this.
 """
+
 from __future__ import annotations
 
 import os
-from typing import List
 
 
 def mode() -> str:
@@ -28,7 +28,7 @@ def hold_timeout() -> float:
         return 300.0
 
 
-def cors_origins() -> List[str]:
+def cors_origins() -> list[str]:
     """Origins allowed to call the API from a browser.
 
     ESCROW_CORS_ORIGINS is a comma-separated list.  Unset means the local

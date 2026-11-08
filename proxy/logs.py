@@ -4,13 +4,14 @@ Every log line is one JSON object on stdout, e.g.
 {"ts": "...", "level": "INFO", "logger": "escrow", "event": "action.held", "action_id": "act_…"}
 Set ESCROW_LOG_LEVEL to change verbosity (default INFO).
 """
+
 from __future__ import annotations
 
 import json
 import logging
 import os
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 _RESERVED = set(vars(logging.makeLogRecord({})).keys()) | {"message", "asctime"}
@@ -19,7 +20,7 @@ _RESERVED = set(vars(logging.makeLogRecord({})).keys()) | {"message", "asctime"}
 class JsonFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
         out: dict[str, Any] = {
-            "ts": datetime.fromtimestamp(record.created, timezone.utc).isoformat(),
+            "ts": datetime.fromtimestamp(record.created, UTC).isoformat(),
             "level": record.levelname,
             "logger": record.name,
             "event": record.getMessage(),

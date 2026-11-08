@@ -5,6 +5,7 @@ localhost only.  Set ESCROW_RELOAD=1 for auto-reload — but note that a reload
 restarts the server and rejects every action still waiting for review.
 For production use the Docker image (uvicorn, ESCROW_MODE=production).
 """
+
 import os
 
 import uvicorn
@@ -16,4 +17,6 @@ uvicorn.run(
     host=os.environ.get("ESCROW_HOST", "127.0.0.1"),
     port=int(os.environ.get("ESCROW_PORT", "4000")),
     reload=os.environ.get("ESCROW_RELOAD") == "1",
+    # Held requests would otherwise block shutdown for the whole hold timeout.
+    timeout_graceful_shutdown=5,
 )

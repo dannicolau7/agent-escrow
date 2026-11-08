@@ -8,12 +8,13 @@
   auth comes from MCP_UPSTREAM_TOKEN instead.
 - Without MCP_UPSTREAM_URL it returns a mock result, but only in dev mode.
 """
+
 from __future__ import annotations
 
 import json
 import os
 from dataclasses import dataclass, field
-from typing import Any, Dict, Optional
+from typing import Any
 
 import httpx
 
@@ -30,9 +31,9 @@ _PASSTHROUGH_RESPONSE_HEADERS = ("mcp-session-id",)
 
 @dataclass
 class ForwardResult:
-    body: Optional[dict]                      # None for 202/notification acks
+    body: dict | None  # None for 202/notification acks
     status_code: int = 200
-    headers: Dict[str, str] = field(default_factory=dict)
+    headers: dict[str, str] = field(default_factory=dict)
 
     @property
     def ok(self) -> bool:
@@ -43,7 +44,7 @@ def _error(rpc_id: Any, code: int, message: str) -> ForwardResult:
     return ForwardResult({"jsonrpc": "2.0", "id": rpc_id, "error": {"code": code, "message": message}})
 
 
-def _parse_sse(text: str, rpc_id: Any) -> Optional[dict]:
+def _parse_sse(text: str, rpc_id: Any) -> dict | None:
     """Return the JSON-RPC response for `rpc_id` from an SSE body.
 
     The stream may carry server→client requests/notifications before the
@@ -51,7 +52,7 @@ def _parse_sse(text: str, rpc_id: Any) -> Optional[dict]:
     """
     messages: list[dict] = []
     data_lines: list[str] = []
-    for line in text.splitlines() + [""]:
+    for line in [*text.splitlines(), ""]:
         if line.startswith("data:"):
             data_lines.append(line[5:].lstrip())
         elif line == "" and data_lines:
