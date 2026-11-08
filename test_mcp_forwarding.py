@@ -514,3 +514,116 @@ async def test_all_three_channels_called(monkeypatch):
     assert any("slack" in u for u in urls)
     assert any("fake-webhook" in u for u in urls)
     assert any("pagerduty" in u for u in urls)
+
+
+# ---------------------------------------------------------------------------
+# RBAC tests
+# ---------------------------------------------------------------------------
+
+def _escrow_keys(*triples: tuple) -> str:
+    """Build ESCROW_KEYS value from (label, role, key) triples."""
+    return "|".join(f"{l}:{r}:{k}" for l, r, k in triples)
+
+
+async def test_rbac_approver_can_resolve(client, monkeypatch):
+    monkeypatch.setenv("ESCROW_KEYS", _escrow_keys(
+        ("agent1", "agent", "sk_agent"),
+        ("reviewer", "approver", "sk_approver"),
+    ))
+    # Agent submits a mutating call
+    t = asyncio.create_task(client.post("/mcp", json={
+        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": {"name": "delete_record", "arguments": {}},
+    }, headers={"X-Api-Key": "sk_agent"}))
+    await asyncio.sleep(0.05)
+
+    pending = (await client.get("/api/pending", headers={"X-Api-Key": "sk_approver"})).json()
+    assert len(pending) == 1
+
+    r = await client.post("/api/resolve",
+        json={"action_id": pending[0]["id"], "decision": "APPROVED"},
+        headers={"X-Api-Key": "sk_approver"},
+    )
+    assert r.status_code == 200
+    assert r.json()["resolved_by"] == "reviewer"
+    await t
+
+
+async def test_rbac_approver_cannot_call_mcp(client, monkeypatch):
+    monkeypatch.setenv("ESCROW_KEYS", _escrow_keys(("reviewer", "approver", "sk_approver")))
+    r = await client.post("/mcp", json={
+        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": {"name": "get_user", "arguments": {}},
+    }, headers={"X-Api-Key": "sk_approver"})
+    assert r.status_code == 403
+
+
+async def test_rbac_viewer_can_read_pending(client, monkeypatch):
+    monkeypatch.setenv("ESCROW_KEYS", _escrow_keys(("watcher", "viewer", "sk_viewer")))
+    r = await client.get("/api/pending", headers={"X-Api-Key": "sk_viewer"})
+    assert r.status_code == 200
+
+
+async def test_rbac_viewer_cannot_resolve(client, monkeypatch):
+    monkeypatch.setenv("ESCROW_KEYS", _escrow_keys(("watcher", "viewer", "sk_viewer")))
+    r = await client.post("/api/resolve",
+        json={"action_id": "ghost", "decision": "APPROVED"},
+        headers={"X-Api-Key": "sk_viewer"},
+    )
+    assert r.status_code == 403
+
+
+async def test_rbac_agent_cannot_read_pending(client, monkeypatch):
+    monkeypatch.setenv("ESCROW_KEYS", _escrow_keys(("bot", "agent", "sk_agent")))
+    r = await client.get("/api/pending", headers={"X-Api-Key": "sk_agent"})
+    assert r.status_code == 403
+
+
+async def test_rbac_agent_can_call_mcp(client, monkeypatch):
+    monkeypatch.setenv("ESCROW_KEYS", _escrow_keys(("bot", "agent", "sk_agent")))
+    r = await client.post("/mcp", json={
+        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": {"name": "get_user", "arguments": {}},
+    }, headers={"X-Api-Key": "sk_agent"})
+    assert r.status_code == 200
+    assert "result" in r.json()
+
+
+async def test_rbac_resolved_by_recorded(client, monkeypatch):
+    monkeypatch.setenv("ESCROW_KEYS", _escrow_keys(
+        ("myagent", "agent", "sk_agent"),
+        ("alice", "approver", "sk_alice"),
+    ))
+    t = asyncio.create_task(client.post("/mcp", json={
+        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": {"name": "delete_record", "arguments": {}},
+    }, headers={"X-Api-Key": "sk_agent"}))
+    await asyncio.sleep(0.05)
+
+    pending = (await client.get("/api/pending", headers={"X-Api-Key": "sk_alice"})).json()
+    action_id = pending[0]["id"]
+
+    await client.post("/api/resolve",
+        json={"action_id": action_id, "decision": "REJECTED", "rejection_reason": "not needed"},
+        headers={"X-Api-Key": "sk_alice"},
+    )
+    await t
+
+    history = (await client.get("/api/history", headers={"X-Api-Key": "sk_alice"})).json()
+    resolved = next(h for h in history if h["id"] == action_id)
+    assert resolved["resolved_by"] == "alice"
+    assert resolved["rejection_reason"] == "not needed"
+
+
+async def test_rbac_legacy_escrow_api_key_is_admin(client, monkeypatch):
+    monkeypatch.setenv("ESCROW_API_KEY", "legacy_key")
+    monkeypatch.delenv("ESCROW_KEYS", raising=False)
+    # Legacy admin key can call /mcp AND /api/pending AND /api/resolve
+    r_mcp = await client.post("/mcp", json={
+        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": {"name": "get_user", "arguments": {}},
+    }, headers={"X-Api-Key": "legacy_key"})
+    assert r_mcp.status_code == 200
+
+    r_pending = await client.get("/api/pending", headers={"X-Api-Key": "legacy_key"})
+    assert r_pending.status_code == 200

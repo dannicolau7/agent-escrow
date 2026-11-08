@@ -3,13 +3,13 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import db
-from .auth import api_key_middleware
+from .auth import api_key_middleware, require_agent
 from .config import load_policy
 from .forwarder import forward as _forward_to_upstream
 from .proxy_engine import process_mcp_call
@@ -58,7 +58,7 @@ async def health():
     return {"status": "ok", "pending_calls": db.count_pending()}
 
 
-@app.post("/mcp")
+@app.post("/mcp", dependencies=[Depends(require_agent)])
 async def handle_mcp(request: Request):
     try:
         payload = await request.json()

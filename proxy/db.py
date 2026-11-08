@@ -62,6 +62,7 @@ def ensure_db() -> None:
                 raw_arguments    TEXT NOT NULL,
                 status           TEXT NOT NULL,
                 rejection_reason TEXT,
+                resolved_by      TEXT,
                 created_at       TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 resolved_at      TEXT
             );
@@ -69,6 +70,12 @@ def ensure_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_pending_actions_created_at ON pending_actions(created_at);
         """)
         conn.commit()
+        # Live migration for databases created before resolved_by was added.
+        try:
+            conn.execute("ALTER TABLE pending_actions ADD COLUMN resolved_by TEXT")
+            conn.commit()
+        except sqlite3.OperationalError:
+            pass  # column already exists
 
 
 def init_db() -> None:
@@ -145,6 +152,7 @@ def update_action_status(
     action_id: str,
     status: str,
     rejection_reason: Optional[str] = None,
+    resolved_by: Optional[str] = None,
 ) -> bool:
     """Update status only if currently PENDING. Returns True if updated."""
     conn = get_conn()
@@ -152,10 +160,10 @@ def update_action_status(
         cur = conn.execute(
             """
             UPDATE pending_actions
-            SET status = ?, rejection_reason = ?, resolved_at = ?
+            SET status = ?, rejection_reason = ?, resolved_by = ?, resolved_at = ?
             WHERE id = ? AND status = 'PENDING'
             """,
-            (status, rejection_reason, _utcnow(), action_id),
+            (status, rejection_reason, resolved_by, _utcnow(), action_id),
         )
         conn.commit()
     return cur.rowcount > 0
