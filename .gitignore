@@ -22,3 +22,7 @@ escrow_scrape_key.txt
 .dev-escrow.db*
 .ruff_cache/
 .pytest_cache/
+
+# Local dev env and phone access note
+.env.dev
+.phone-access.txt

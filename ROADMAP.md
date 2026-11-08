@@ -1,17 +1,20 @@
 # AgentEscrow — Roadmap & Tracking
 
-_Last updated: 2026-11-08_
+_Last updated: 2026-11-08 (evening)_
 
 ## Now
 
-- [ ] **Merge [PR #1](https://github.com/dannicolau7/agent-escrow/pull/1)** (`fix/audit-findings`) once CI is green. Auto-fix is on for it.
-- [ ] **Sync the VS Code agent:** have it pull `main` after the merge, before building anything else. Otherwise it builds on old code and conflicts in `proxy/`.
+- [x] **Merge [PR #1](https://github.com/dannicolau7/agent-escrow/pull/1)** — audit fixes, merged.
+- [x] **Merge [PR #2](https://github.com/dannicolau7/agent-escrow/pull/2)** — AGENTS.md rules, `make dev`/`make demo`, end-to-end tests, lint/type CI, graceful-shutdown fix, merged.
+- [ ] **Sync the VS Code agent:** have it pull `main` and run `make install` before building anything else. That's how it picks up `AGENTS.md`.
+- [ ] **Protect `main` on GitHub** (repo settings): require a PR with passing CI. Only the repo owner can do this.
+- [ ] **Replace the old Docker stack** still running pre-fix code on ports 4000/3000/9090: `docker compose down`, then `docker compose up -d --build` with a filled-in `.env`.
 
 ## Next: test with a real agent (before building more)
 
 So far everything is verified only by tests and a fake MCP server. Put the proxy between a real client (Claude Code / Claude Desktop) and a real MCP server (e.g. GitHub, a database) and run an actual task.
 
-- [ ] **Client timeouts.** Most MCP clients give up after ~60 s, but a human review can take up to `ESCROW_HOLD_TIMEOUT` (300 s). If the client gives up first, the agent fails even when someone approves. This is the problem most likely to break a demo. The fix may change the design (e.g. return "held, check back" instead of keeping the request open).
+- [ ] **Client timeouts** _(fix in progress: progress heartbeats + async hold mode)_. Most MCP clients give up after ~60 s, but a human review can take up to `ESCROW_HOLD_TIMEOUT` (300 s). If the client gives up first, the agent fails even when someone approves. This is the problem most likely to break a demo. The fix may change the design (e.g. return "held, check back" instead of keeping the request open).
 - [ ] **stdio servers.** Most popular MCP servers only speak stdio. Confirm an HTTP bridge (`mcp-proxy` / `supergateway`) works smoothly.
 - [ ] **Risk levels.** Check that the classifier's choices feel right on real tool names; tune `proxy/policies.yaml`.
 
