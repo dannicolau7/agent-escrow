@@ -263,3 +263,73 @@ def test_drop_table_is_critical():
     result = classify_tool_call("drop_table")
     assert result["action"] == "HOLD"
     assert result["risk_level"] == "CRITICAL"
+
+
+# ---------------------------------------------------------------------------
+# 14. SSE broadcast: events.broadcast() delivers to all subscribers
+# ---------------------------------------------------------------------------
+
+async def test_sse_broadcast_reaches_subscriber():
+    import proxy.events as ev
+    # Reset subscribers for isolation
+    ev._subscribers.clear()
+
+    received: list = []
+
+    async def _collect():
+        async for chunk in ev.subscribe():
+            if chunk.startswith("data:"):
+                import json
+                received.append(json.loads(chunk.split("data:", 1)[1].strip()))
+                return
+
+    task = asyncio.create_task(_collect())
+    await asyncio.sleep(0)  # let subscriber register
+    ev.broadcast("action_added", {"action_id": "act_test", "tool_name": "delete_x"})
+    await asyncio.wait_for(task, timeout=2.0)
+
+    assert len(received) == 1
+    assert received[0]["type"] == "action_added"
+    assert received[0]["action_id"] == "act_test"
+    ev._subscribers.clear()
+
+
+# ---------------------------------------------------------------------------
+# 15. SSE broadcast: action_resolved event after /api/resolve
+# ---------------------------------------------------------------------------
+
+async def test_sse_action_resolved_event(client):
+    import proxy.events as ev
+    ev._subscribers.clear()
+
+    received: list = []
+
+    async def _collect():
+        async for chunk in ev.subscribe():
+            if chunk.startswith("data:"):
+                import json
+                received.append(json.loads(chunk.split("data:", 1)[1].strip()))
+                if any(e.get("type") == "action_resolved" for e in received):
+                    return
+
+    async def _work():
+        await asyncio.sleep(0)
+        # Create a pending action
+        t = asyncio.create_task(client.post("/mcp", json={
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": "delete_record", "arguments": {}},
+        }))
+        await asyncio.sleep(0.05)
+        pending = (await client.get("/api/pending")).json()
+        await client.post("/api/resolve", json={"action_id": pending[0]["id"], "decision": "APPROVED"})
+        await t
+
+    task = asyncio.create_task(_collect())
+    await asyncio.sleep(0)
+    await _work()
+    await asyncio.wait_for(task, timeout=3.0)
+
+    resolved = [e for e in received if e.get("type") == "action_resolved"]
+    assert resolved, f"no action_resolved event; got {received}"
+    assert resolved[0]["status"] == "APPROVED"
+    ev._subscribers.clear()

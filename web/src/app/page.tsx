@@ -42,9 +42,44 @@ export default function Dashboard() {
   useEffect(() => {
     fetchPending()
     fetchHistory()
-    const p = setInterval(fetchPending, 3000)
-    const h = setInterval(fetchHistory, 5000)
-    return () => { clearInterval(p); clearInterval(h) }
+
+    // SSE for real-time updates; fall back to 30s safety-net poll on error.
+    let es: EventSource | null = null
+    let fallbackTimer: ReturnType<typeof setInterval> | null = null
+
+    const connectSSE = () => {
+      es = new EventSource(`${API}/api/events`)
+      es.onmessage = (e) => {
+        try {
+          const msg = JSON.parse(e.data) as { type: string }
+          if (msg.type === 'action_added') {
+            fetchPending()
+            setLastRefresh(new Date().toLocaleTimeString())
+          } else if (msg.type === 'action_resolved') {
+            fetchPending()
+            fetchHistory()
+            setLastRefresh(new Date().toLocaleTimeString())
+          }
+        } catch {}
+      }
+      es.onerror = () => {
+        es?.close()
+        es = null
+        // SSE failed — activate fallback polling until we reconnect
+        if (!fallbackTimer) {
+          fallbackTimer = setInterval(() => {
+            fetchPending()
+            fetchHistory()
+          }, 30000)
+        }
+      }
+    }
+
+    connectSSE()
+    return () => {
+      es?.close()
+      if (fallbackTimer) clearInterval(fallbackTimer)
+    }
   }, [fetchPending, fetchHistory])
 
   // Keep focusedIdx in bounds as list shrinks

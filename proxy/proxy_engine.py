@@ -6,6 +6,7 @@ from typing import Any, Dict
 
 from . import db
 from .config import classify_tool_call
+from .events import broadcast
 from .forwarder import forward as _forward
 
 EXECUTION_WAITERS: Dict[str, Dict[str, Any]] = {}
@@ -38,6 +39,7 @@ async def process_mcp_call(
         reason=reason,
         args=tool_args,
     )
+    broadcast("action_added", {"action_id": action_id, "tool_name": tool_name})
 
     event = asyncio.Event()
     EXECUTION_WAITERS[action_id] = {

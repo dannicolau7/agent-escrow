@@ -23,7 +23,7 @@ jobs:
         run: pip install -r proxy/requirements.txt
 
       - name: Run tests
-        run: pytest test_agent_simulation.py test_mcp_flow.py -v --tb=short
+        run: pytest test_agent_simulation.py test_mcp_flow.py test_mcp_forwarding.py -v --tb=short
 
   build-ui:
     name: Next.js build
