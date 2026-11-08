@@ -17,7 +17,7 @@ AgentEscrow is a **security product**: it holds risky AI-agent tool calls until 
 
 ## Invariants — never break these
 
-Each one is covered by tests in `test_audit_fixes.py`. If a change makes one fail, the change is wrong, not the test.
+Each one is covered by tests in `test_audit_fixes.py`, `test_hold_modes.py` and `test_e2e.py`. If a change makes one fail, the change is wrong, not the test.
 
 1. **Listen before showing.** In `proxy/proxy_engine.py` the waiter is registered in `EXECUTION_WAITERS` *before* the action is inserted, broadcast or notified. Nothing slow (HTTP calls, notifications) may run between holding an action and waiting on it. Notifications go through `notifications.schedule(...)` (background), never `await`ed inline.
 2. **The database decides.** `db.update_action_status(...)` only changes a `PENDING` row and returns whether it did; the waiting request reads the final status from the database. Never trust in-memory state alone for a decision.
@@ -30,7 +30,8 @@ Each one is covered by tests in `test_audit_fixes.py`. If a change makes one fai
 6. **Classifier precedence** (`proxy/config.py`): mutation rules can never be bypassed by a read prefix. Names with chaining words (`get_and_delete_x`) are held. Test new rules against both bypass names and false positives.
 7. **Everything that matters is audited** through `db.insert_audit_log` (hash-chained). Don't write to `audit_log` any other way, and never update or delete audit rows.
 8. **Agent-supplied text is untrusted.** Escape it in Slack/HTML/Markdown (`notifications._slack_escape`, `esc()` in `web/index.html`). Never render it as HTML.
-9. **No secrets in URLs or logs.** `?api_key=` is accepted only on `/api/events`. Don't log keys, tokens or full tool arguments at INFO level.
+9. **Hold modes** (`ESCROW_HOLD_MODE`). In `wait` mode a held call runs only inside the request that is waiting for it; if that request is cancelled (client disconnect, shutdown) the action is REJECTED. In `async` mode the approved call runs in the background from the stored request (`execute_approved_async`), and `escrow_get_result` only shows an action to the agent that submitted it (or an admin). Never execute an async action that is not `APPROVED`.
+10. **No secrets in URLs or logs.** `?api_key=` is accepted only on `/api/events`. Don't log keys, tokens or full tool arguments at INFO level.
 
 ## Project map
 

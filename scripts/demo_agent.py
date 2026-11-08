@@ -44,8 +44,26 @@ async def call_tool(client, rid, name, args, session):
     t0 = time.monotonic()
     print(f"→ {name} {args}")
     body, _ = await rpc(client, rid, "tools/call", {"name": name, "arguments": args}, session)
+    held = body.get("result", {}).get("structuredContent", {})
+    if held.get("status") == "PENDING" and held.get("action_id"):
+        # Async hold mode: the proxy answered at once; poll for the outcome.
+        print(f"… {name} held for review as {held['action_id']} (async mode), polling")
+        while True:
+            await asyncio.sleep(2)
+            body, _ = await rpc(
+                client,
+                rid,
+                "tools/call",
+                {"name": "escrow_get_result", "arguments": {"action_id": held["action_id"]}},
+                session,
+            )
+            sc = body.get("result", {}).get("structuredContent", {})
+            if sc.get("status") not in ("PENDING",) and sc.get("execution") != "RUNNING":
+                break
     took = time.monotonic() - t0
-    if "error" in body:
+    if "error" in body or body.get("result", {}).get("isError"):
+        if "error" not in body:
+            body = {"error": {"message": body["result"]["content"][0]["text"]}}
         print(f"✗ {name} ({took:.1f}s): {body['error']['message']}")
     else:
         text = body["result"]["content"][0]["text"] if body["result"].get("content") else body["result"]

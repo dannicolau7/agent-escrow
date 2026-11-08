@@ -28,6 +28,28 @@ def hold_timeout() -> float:
         return 300.0
 
 
+def hold_mode() -> str:
+    """How a held tools/call is answered.
+
+    "wait"  (default) keep the request open until a human decides.  Clients
+            that accept SSE get a stream with progress notifications every
+            ESCROW_HEARTBEAT_SECONDS, so clients that reset their timeout on
+            progress stay connected.
+    "async" answer at once with "held as act_…"; the agent calls the
+            escrow_get_result tool to get the outcome.  Works with any client
+            timeout.
+    """
+    mode = os.environ.get("ESCROW_HOLD_MODE", "wait").strip().lower()
+    return mode if mode in ("wait", "async") else "wait"
+
+
+def heartbeat_seconds() -> float:
+    try:
+        return max(1.0, float(os.environ.get("ESCROW_HEARTBEAT_SECONDS", "15")))
+    except ValueError:
+        return 15.0
+
+
 def cors_origins() -> list[str]:
     """Origins allowed to call the API from a browser.
 
