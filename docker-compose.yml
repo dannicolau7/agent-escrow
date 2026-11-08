@@ -19,5 +19,22 @@ services:
       timeout: 5s
       retries: 3
 
+  prometheus:
+    image: prom/prometheus:latest
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      # Mount a file containing just the scrape key (no newline).
+      # Create it with: echo -n "$ESCROW_SCRAPE_KEY" > escrow_scrape_key.txt
+      - ./escrow_scrape_key.txt:/etc/prometheus/escrow_scrape_key.txt:ro
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=15d
+    depends_on:
+      - proxy
+    restart: unless-stopped
+
 volumes:
   escrow-data:

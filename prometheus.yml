@@ -1,0 +1,21 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: agent-escrow
+    metrics_path: /metrics
+    scheme: http
+
+    # Pass a viewer-role API key so the scraper can reach /metrics.
+    # Generate one with: python -c "import secrets; print('sk_' + secrets.token_hex(16))"
+    # Then set ESCROW_SCRAPE_KEY in your environment.
+    authorization:
+      type: Bearer
+      credentials_file: /etc/prometheus/escrow_scrape_key.txt
+
+    static_configs:
+      - targets:
+          - proxy:4000      # docker-compose service name; change to host:port if running standalone
+        labels:
+          env: production
