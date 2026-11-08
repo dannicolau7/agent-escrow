@@ -20,3 +20,7 @@ pytest.ini
 # Docs
 *.md
 specs/
+
+# Secrets
+.env
+escrow_scrape_key.txt

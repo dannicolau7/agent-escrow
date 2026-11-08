@@ -1,3 +1,5 @@
+> **Note:** this is the original design spec. The README and DEPLOY.md describe the current behaviour (auth, forwarding, method allowlist, audit chain).
+
 # AgentEscrow — Technical Specification
 
 ## 1. System overview

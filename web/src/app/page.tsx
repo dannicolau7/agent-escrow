@@ -8,11 +8,12 @@ import type { EscrowAction } from '@/types'
 const API = process.env.NEXT_PUBLIC_API_URL ?? ''
 const KEY_STORAGE = 'escrow_api_key'
 
+// null = the user hasn't connected yet; '' = connected without a key (dev mode)
 function useApiKey() {
-  const [key, setKeyState] = useState<string>('')
+  const [key, setKeyState] = useState<string | null>(null)
 
   useEffect(() => {
-    setKeyState(localStorage.getItem(KEY_STORAGE) ?? '')
+    setKeyState(localStorage.getItem(KEY_STORAGE))
   }, [])
 
   const setKey = (k: string) => {
@@ -21,12 +22,12 @@ function useApiKey() {
   }
   const clearKey = () => {
     localStorage.removeItem(KEY_STORAGE)
-    setKeyState('')
+    setKeyState(null)
   }
   return { key, setKey, clearKey }
 }
 
-function authHeaders(key: string): Record<string, string> {
+function authHeaders(key: string | null): Record<string, string> {
   return key ? { 'X-Api-Key': key } : {}
 }
 
@@ -41,6 +42,8 @@ export default function Dashboard() {
   const [rejectingId, setRejectingId]   = useState<string | null>(null)
   const [rejectReason, setRejectReason] = useState('')
   const [lastRefresh, setLastRefresh]   = useState('')
+  const [actionError, setActionError]   = useState<string | null>(null)
+  const [busyId, setBusyId]             = useState<string | null>(null)
   const rejectInputRef                  = useRef<HTMLInputElement>(null)
 
   // -------------------------------------------------------------------------
@@ -69,7 +72,7 @@ export default function Dashboard() {
   }, [key, authError])
 
   useEffect(() => {
-    if (authError || !key) return
+    if (authError || key === null) return
     fetchPending()
     fetchHistory()
 
@@ -92,14 +95,19 @@ export default function Dashboard() {
           }
         } catch {}
       }
+      es.onopen = () => {
+        // Back online: stop the fallback poll and catch up on anything missed.
+        if (fallbackTimer) { clearInterval(fallbackTimer); fallbackTimer = null }
+        fetchPending()
+        fetchHistory()
+      }
       es.onerror = () => {
-        es?.close()
-        es = null
+        // EventSource reconnects by itself; poll meanwhile so nothing is missed.
         if (!fallbackTimer) {
           fallbackTimer = setInterval(() => {
             fetchPending()
             fetchHistory()
-          }, 30000)
+          }, 5000)
         }
       }
     }
@@ -127,31 +135,41 @@ export default function Dashboard() {
   // Actions
   // -------------------------------------------------------------------------
 
-  const handleApprove = useCallback(async (id: string) => {
+  // Resolve an action and only remove its card once the server confirms.
+  const resolve = useCallback(async (id: string, decision: 'APPROVED' | 'REJECTED', reason?: string) => {
+    if (busyId) return
+    setBusyId(id)
+    setActionError(null)
     try {
-      await fetch(`${API}/api/resolve`, {
+      const r = await fetch(`${API}/api/resolve`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...authHeaders(key) },
-        body: JSON.stringify({ action_id: id, decision: 'APPROVED' }),
+        body: JSON.stringify({ action_id: id, decision, rejection_reason: reason || null }),
       })
+      if (r.status === 404) {
+        // Someone else resolved it, or it timed out: just drop the card.
+        setActionError('That action was already resolved or has expired.')
+      } else if (!r.ok) {
+        const err = await r.json().catch(() => ({} as { detail?: string }))
+        setActionError(
+          r.status === 403
+            ? 'Your key is not allowed to approve or reject (approver role required).'
+            : `Could not ${decision === 'APPROVED' ? 'approve' : 'reject'}: ${err.detail ?? `HTTP ${r.status}`}`,
+        )
+        return
+      }
       setPending(prev => prev.filter(a => a.id !== id))
+      if (decision === 'REJECTED') { setRejectingId(null); setRejectReason('') }
       fetchHistory()
-    } catch {}
-  }, [key, fetchHistory])
+    } catch {
+      setActionError('Network error: the decision was not sent.')
+    } finally {
+      setBusyId(null)
+    }
+  }, [key, busyId, fetchHistory])
 
-  const handleReject = useCallback(async (id: string, reason?: string) => {
-    try {
-      await fetch(`${API}/api/resolve`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...authHeaders(key) },
-        body: JSON.stringify({ action_id: id, decision: 'REJECTED', rejection_reason: reason || null }),
-      })
-      setPending(prev => prev.filter(a => a.id !== id))
-      setRejectingId(null)
-      setRejectReason('')
-      fetchHistory()
-    } catch {}
-  }, [key, fetchHistory])
+  const handleApprove = useCallback((id: string) => resolve(id, 'APPROVED'), [resolve])
+  const handleReject  = useCallback((id: string, reason?: string) => resolve(id, 'REJECTED', reason), [resolve])
 
   // -------------------------------------------------------------------------
   // Keyboard shortcuts: J = approve, K = reject, ↑↓ = navigate, Esc = cancel
@@ -192,7 +210,7 @@ export default function Dashboard() {
   // Auth gate — shown when no key is stored or when a 401/403 occurs
   // -------------------------------------------------------------------------
 
-  if (!key || authError) {
+  if (key === null || authError) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gray-950">
         <div className="w-full max-w-sm space-y-5 p-8 border border-gray-800 rounded-2xl bg-gray-900">
@@ -283,6 +301,13 @@ export default function Dashboard() {
       </header>
 
       <main className="max-w-3xl mx-auto px-6 py-10 space-y-12">
+
+        {actionError && (
+          <div role="alert" className="flex items-start justify-between gap-4 rounded-lg border border-red-800 bg-red-950/60 px-4 py-3 text-sm text-red-300">
+            <span>{actionError}</span>
+            <button onClick={() => setActionError(null)} className="text-red-400 hover:text-red-200">dismiss</button>
+          </div>
+        )}
 
         {/* Pending queue */}
         <section>

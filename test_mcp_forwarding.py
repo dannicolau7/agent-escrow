@@ -100,10 +100,11 @@ async def test_real_upstream_forwarding(client, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# 3. Header passthrough: Authorization and X-Api-Key forwarded
+# 3. Headers: the agent's escrow key is NEVER sent upstream; MCP session
+#    headers are; upstream auth comes from MCP_UPSTREAM_TOKEN
 # ---------------------------------------------------------------------------
 
-async def test_header_passthrough(client, monkeypatch):
+async def test_escrow_key_not_forwarded_upstream(client, monkeypatch):
     captured: list = []
 
     def handler(req: httpx.Request) -> httpx.Response:
@@ -111,16 +112,19 @@ async def test_header_passthrough(client, monkeypatch):
         return httpx.Response(200, json={"jsonrpc": "2.0", "id": 1, "result": {"content": []}})
 
     monkeypatch.setenv("MCP_UPSTREAM_URL", "http://fake-upstream/mcp")
+    monkeypatch.setenv("MCP_UPSTREAM_TOKEN", "upstream-secret")
     forwarder_module._test_transport = httpx.MockTransport(handler=handler)
 
     await client.post(
         "/mcp",
         json=_tools_call("get_user"),
-        headers={"Authorization": "Bearer token123", "X-Api-Key": "key456"},
+        headers={"Authorization": "Bearer token123", "X-Api-Key": "key456", "Mcp-Session-Id": "sess-1"},
     )
     assert captured, "handler never called"
-    assert captured[0].get("authorization") == "Bearer token123"
-    assert captured[0].get("x-api-key") == "key456"
+    assert captured[0].get("authorization") == "Bearer upstream-secret"
+    assert "x-api-key" not in captured[0]
+    assert captured[0].get("mcp-session-id") == "sess-1"
+    assert "text/event-stream" in captured[0].get("accept", "")
 
 
 # ---------------------------------------------------------------------------

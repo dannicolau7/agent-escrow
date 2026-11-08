@@ -12,4 +12,7 @@ export interface EscrowAction {
   resolved_by: string | null
   created_at: string
   resolved_at: string | null
+  execution_status?: 'SUCCEEDED' | 'FAILED' | null
+  execution_result?: string | null
+  executed_at?: string | null
 }

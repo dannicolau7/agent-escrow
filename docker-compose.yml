@@ -1,19 +1,36 @@
+# Production-style stack: proxy + Prometheus + Grafana.
+# Copy .env.example to .env and fill it in first — the proxy refuses to start
+# in production mode without API keys and an upstream MCP server.
+#
+# Only the proxy is published.  Put a TLS-terminating reverse proxy in front
+# of it for anything beyond localhost (see DEPLOY.md, or enable the `tls`
+# profile: docker compose --profile tls up -d).
+
 services:
   proxy:
     build: .
     ports:
-      - "4000:4000"
+      - "${ESCROW_BIND:-127.0.0.1}:4000:4000"
     volumes:
-      # Persist the SQLite database outside the container
       - escrow-data:/data
     environment:
-      # Named keys: pipe-separated label:role:key triples.
-      # Leave unset for open dev mode.
+      - ESCROW_MODE=${ESCROW_MODE:-production}
+      # Named keys: pipe-separated label:role:key triples (roles: agent, viewer, approver, admin)
       - ESCROW_KEYS=${ESCROW_KEYS:-}
-      # Legacy single admin key (backward compat).
       - ESCROW_API_KEY=${ESCROW_API_KEY:-}
-      # Set to forward approved tool calls to a real MCP server.
+      # Upstream MCP server (Streamable HTTP) and its own credential
       - MCP_UPSTREAM_URL=${MCP_UPSTREAM_URL:-}
+      - MCP_UPSTREAM_TOKEN=${MCP_UPSTREAM_TOKEN:-}
+      - MCP_UPSTREAM_TIMEOUT=${MCP_UPSTREAM_TIMEOUT:-30}
+      - ESCROW_HOLD_TIMEOUT=${ESCROW_HOLD_TIMEOUT:-300}
+      - ESCROW_CORS_ORIGINS=${ESCROW_CORS_ORIGINS:-}
+      - ESCROW_AUDIT_KEY=${ESCROW_AUDIT_KEY:-}
+      - ESCROW_LOG_LEVEL=${ESCROW_LOG_LEVEL:-INFO}
+      # Notifications
+      - DASHBOARD_URL=${DASHBOARD_URL:-http://localhost:4000/ui/}
+      - SLACK_WEBHOOK_URL=${SLACK_WEBHOOK_URL:-}
+      - NOTIFICATION_WEBHOOK_URL=${NOTIFICATION_WEBHOOK_URL:-}
+      - PAGERDUTY_ROUTING_KEY=${PAGERDUTY_ROUTING_KEY:-}
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:4000/health')"]
@@ -22,14 +39,19 @@ services:
       retries: 3
 
   prometheus:
-    image: prom/prometheus:latest
+    image: prom/prometheus:v2.54.1
     ports:
-      - "9090:9090"
+      - "127.0.0.1:9090:9090"   # localhost only; Prometheus has no auth
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      # Mount a file containing just the scrape key (no newline).
-      # Create it with: echo -n "$ESCROW_SCRAPE_KEY" > escrow_scrape_key.txt
-      - ./escrow_scrape_key.txt:/etc/prometheus/escrow_scrape_key.txt:ro
+      # File holding a viewer-role key, no trailing newline:
+      #   printf '%s' "sk_..." > escrow_scrape_key.txt
+      - type: bind
+        source: ./escrow_scrape_key.txt
+        target: /etc/prometheus/escrow_scrape_key.txt
+        read_only: true
+        bind:
+          create_host_path: false   # fail clearly instead of creating a directory
       - prometheus-data:/prometheus
     command:
       - --config.file=/etc/prometheus/prometheus.yml
@@ -40,11 +62,11 @@ services:
     restart: unless-stopped
 
   grafana:
-    image: grafana/grafana:latest
+    image: grafana/grafana:11.2.0
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
     environment:
-      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:?Set GRAFANA_PASSWORD in .env}
       - GF_USERS_ALLOW_SIGN_UP=false
       - GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH=/etc/grafana/provisioning/dashboards/escrow.json
     volumes:
@@ -54,7 +76,24 @@ services:
       - prometheus
     restart: unless-stopped
 
+  # Optional automatic HTTPS (Let's Encrypt) in front of the proxy.
+  # Set ESCROW_DOMAIN in .env, point DNS at this host, then:
+  #   docker compose --profile tls up -d
+  caddy:
+    image: caddy:2.8
+    profiles: ["tls"]
+    ports:
+      - "80:80"
+      - "443:443"
+    command: caddy reverse-proxy --from ${ESCROW_DOMAIN:-localhost} --to proxy:4000
+    volumes:
+      - caddy-data:/data
+    depends_on:
+      - proxy
+    restart: unless-stopped
+
 volumes:
   escrow-data:
   prometheus-data:
   grafana-data:
+  caddy-data:

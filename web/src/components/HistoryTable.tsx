@@ -55,6 +55,14 @@ export default function HistoryTable({ items }: { items: EscrowAction[] }) {
                 </td>
                 <td className={`px-4 py-3 font-semibold ${approved ? 'text-green-400' : 'text-red-400'}`}>
                   {item.status}
+                  {approved && item.execution_status === 'FAILED' && (
+                    <span className="ml-2 text-xs font-normal text-amber-400" title={item.execution_result ?? ''}>
+                      · run failed
+                    </span>
+                  )}
+                  {approved && item.execution_status === 'SUCCEEDED' && (
+                    <span className="ml-2 text-xs font-normal text-gray-500">· ran</span>
+                  )}
                 </td>
                 <td className="px-4 py-3 text-gray-500 text-xs whitespace-nowrap">
                   {item.submitted_by ? (

@@ -17,10 +17,12 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-          cache-dependency-path: proxy/requirements.txt
+          cache-dependency-path: |
+            proxy/requirements.txt
+            requirements-dev.txt
 
       - name: Install dependencies
-        run: pip install -r proxy/requirements.txt
+        run: pip install -r requirements-dev.txt
 
       - name: Run tests
         run: pytest test_mcp_flow.py test_mcp_forwarding.py -v --tb=short
