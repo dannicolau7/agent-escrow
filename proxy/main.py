@@ -19,6 +19,7 @@ from .models import (
     WaitResponse,
 )
 from .policies import classify, load_policy
+from .forwarder import forward as _forward_to_upstream
 from .proxy_engine import process_mcp_call
 from .routes_ui import router as ui_router
 
@@ -42,6 +43,9 @@ def _row_to_record(row: dict) -> CallRecord:
 async def lifespan(app: FastAPI):
     db.init_db()
     load_policy()
+    # PENDING rows from a previous process have no live asyncio.Event —
+    # they can never be resolved, so reject them immediately.
+    db.reject_stale_pending("Server restarted; action could not be held.")
     yield
 
 
@@ -210,6 +214,28 @@ async def reject_call(call_id: str, body: ReviewDecision):
 
 @app.post("/mcp")
 async def handle_mcp(request: Request):
-    payload = await request.json()
-    response = await process_mcp_call(payload)
-    return response
+    try:
+        payload = await request.json()
+    except Exception:
+        return {"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "Parse error"}}
+
+    if not isinstance(payload, dict):
+        return {"jsonrpc": "2.0", "id": None, "error": {"code": -32600, "message": "Invalid Request: expected an object"}}
+
+    rpc_id = payload.get("id")
+    method = payload.get("method")
+
+    # MCP protocol handshake and discovery methods are never escrowed —
+    # forward them straight to the upstream (or mock if no upstream is set).
+    if method != "tools/call":
+        return await _forward_to_upstream(payload, dict(request.headers))
+
+    params = payload.get("params")
+    if not isinstance(params, dict):
+        return {"jsonrpc": "2.0", "id": rpc_id, "error": {"code": -32602, "message": "Invalid params: expected an object"}}
+
+    args = params.get("arguments")
+    if args is not None and not isinstance(args, dict):
+        return {"jsonrpc": "2.0", "id": rpc_id, "error": {"code": -32602, "message": "Invalid params: arguments must be an object"}}
+
+    return await process_mcp_call(payload, forward_headers=dict(request.headers))

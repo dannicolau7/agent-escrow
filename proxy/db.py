@@ -160,6 +160,18 @@ def update_action_status(
     return cur.rowcount > 0
 
 
+def reject_stale_pending(reason: str) -> int:
+    """Mark all PENDING rows as REJECTED. Called on startup when in-memory waiters are gone."""
+    conn = get_conn()
+    with _lock:
+        cur = conn.execute(
+            "UPDATE pending_actions SET status='REJECTED', rejection_reason=?, resolved_at=? WHERE status='PENDING'",
+            (reason, _utcnow()),
+        )
+        conn.commit()
+    return cur.rowcount
+
+
 def get_pending_actions() -> List[Dict[str, Any]]:
     conn = get_conn()
     rows = conn.execute(

@@ -73,7 +73,7 @@ async def test_safe_read_auto_approved(client):
     assert r.status_code == 200
     body = r.json()
     assert "result" in body
-    assert "Auto-Executed" in body["result"]["content"][0]["text"]
+    assert body["result"]["content"][0]["type"] == "text"
     assert await _get_pending(client) == []
 
 
@@ -141,7 +141,7 @@ async def test_mcp_approve_flow(client):
 
     mcp_resp = (await task).json()
     assert "result" in mcp_resp
-    assert "Approved by Human" in mcp_resp["result"]["content"][0]["text"]
+    assert mcp_resp["result"]["content"][0]["type"] == "text"
 
 
 # ---------------------------------------------------------------------------

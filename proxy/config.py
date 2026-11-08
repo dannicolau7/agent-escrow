@@ -17,28 +17,30 @@ def load_policies() -> Dict[str, Any]:
 POLICIES = load_policies()
 
 DEFAULT_AUTO_APPROVE_PREFIXES = ("get_", "list_", "search_", "read_", "describe_")
+
+# Ordered by severity: first match wins.  Mutations are evaluated BEFORE safe
+# prefixes so that a name like "get_and_delete_user" is not auto-approved.
 DEFAULT_MUTATION_PATTERNS = (
-    (".*delete.*", "CRITICAL", "DATABASE"),
-    (".*refund.*", "HIGH", "FINANCIAL"),
+    (".*delete.*|.*drop.*|.*destroy.*|.*truncate.*|.*purge.*", "CRITICAL", "DATABASE"),
+    (".*refund.*|.*charge.*|.*transfer.*|.*pay.*", "HIGH", "FINANCIAL"),
     (".*send.*", "MEDIUM", "COMMUNICATION"),
-    (".*update.*", "MEDIUM", "DATABASE"),
-    (".*write.*", "MEDIUM", "GENERIC_WRITE"),
+    (".*update.*|.*write.*|.*push.*|.*create.*|.*insert.*|.*modify.*|.*edit.*|.*upload.*", "MEDIUM", "GENERIC_WRITE"),
 )
 
 
 def classify_tool_call(tool_name: str):
     """Return a risk classification dictionary for a tool name."""
     policies = load_policies() if not POLICIES else POLICIES
-
     rules = policies.get("rules", {})
-    auto_approve_prefixes = rules.get("auto_approve_prefixes", list(DEFAULT_AUTO_APPROVE_PREFIXES))
-    for prefix in auto_approve_prefixes:
-        if str(tool_name).startswith(prefix):
-            return {"action": "AUTO_APPROVE", "risk_level": "LOW", "category": "READ"}
 
+    # 1. Check mutation patterns FIRST — a "get_and_delete_user" must be HOLD,
+    #    not AUTO_APPROVE just because it starts with a safe prefix.
     mutation_rules = rules.get("mutations", [])
     if not mutation_rules:
-        mutation_rules = [{"pattern": pattern, "risk_level": risk_level, "category": category} for pattern, risk_level, category in DEFAULT_MUTATION_PATTERNS]
+        mutation_rules = [
+            {"pattern": pattern, "risk_level": risk_level, "category": category}
+            for pattern, risk_level, category in DEFAULT_MUTATION_PATTERNS
+        ]
 
     for rule in mutation_rules:
         pattern = rule.get("pattern")
@@ -48,6 +50,12 @@ def classify_tool_call(tool_name: str):
                 "risk_level": rule.get("risk_level", "MEDIUM"),
                 "category": rule.get("category", "GENERIC_WRITE"),
             }
+
+    # 2. Only then check safe prefixes.
+    auto_approve_prefixes = rules.get("auto_approve_prefixes", list(DEFAULT_AUTO_APPROVE_PREFIXES))
+    for prefix in auto_approve_prefixes:
+        if str(tool_name).startswith(prefix):
+            return {"action": "AUTO_APPROVE", "risk_level": "LOW", "category": "READ"}
 
     legacy_mutating = policies.get("mutating_tools", [])
     if tool_name in legacy_mutating:

@@ -6,11 +6,16 @@ from typing import Any, Dict
 
 from . import db
 from .config import classify_tool_call
+from .forwarder import forward as _forward
 
 EXECUTION_WAITERS: Dict[str, Dict[str, Any]] = {}
 
 
-async def process_mcp_call(payload: dict, timeout: float = 300.0) -> dict:
+async def process_mcp_call(
+    payload: dict,
+    timeout: float = 300.0,
+    forward_headers: dict | None = None,
+) -> dict:
     db.ensure_db()
     rpc_id = payload.get("id", str(uuid.uuid4()))
     params = payload.get("params", {})
@@ -21,13 +26,7 @@ async def process_mcp_call(payload: dict, timeout: float = 300.0) -> dict:
     classification = classify_tool_call(tool_name)
 
     if classification["action"] == "AUTO_APPROVE":
-        return {
-            "jsonrpc": "2.0",
-            "id": rpc_id,
-            "result": {
-                "content": [{"type": "text", "text": f"[Auto-Executed Safe Read] Output from {tool_name}"}]
-            },
-        }
+        return await _forward(payload, forward_headers)
 
     action_id = f"act_{uuid.uuid4().hex[:12]}"
     db.insert_action(
@@ -71,11 +70,7 @@ async def process_mcp_call(payload: dict, timeout: float = 300.0) -> dict:
 
     if decision == "APPROVED":
         db.update_action_status(action_id, "APPROVED")
-        return {
-            "jsonrpc": "2.0",
-            "id": rpc_id,
-            "result": {"content": [{"type": "text", "text": f"[Approved by Human] Successfully executed {tool_name}."}]},
-        }
+        return await _forward(payload, forward_headers)
 
     db.update_action_status(action_id, "REJECTED", rejection_reason)
     return {
