@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
@@ -48,8 +48,24 @@ async def resolve_action(req: ResolveRequest):
 
 
 @router.get("/api/events")
-async def sse_events():
-    """Server-Sent Events stream — replaces 3-second polling in the dashboard."""
+async def sse_events(request: Request, api_key: Optional[str] = None):
+    """Server-Sent Events stream — replaces 3-second polling in the dashboard.
+
+    EventSource cannot set custom headers, so the key may also be supplied via
+    the ?api_key= query parameter.  The auth middleware handles header-based
+    auth; this endpoint handles the query-param fallback for EventSource.
+    """
+    import os
+    expected = os.environ.get("ESCROW_API_KEY")
+    if expected:
+        provided = api_key or request.headers.get("x-api-key") or ""
+        auth_hdr = request.headers.get("authorization", "")
+        if auth_hdr.lower().startswith("bearer "):
+            provided = auth_hdr[7:].strip()
+        if provided != expected:
+            from fastapi.responses import JSONResponse
+            return JSONResponse(status_code=401, content={"detail": "Missing or invalid API key"})
+
     async def _stream():
         async for chunk in subscribe():
             yield chunk

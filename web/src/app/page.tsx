@@ -5,11 +5,36 @@ import ActionCard from '@/components/ActionCard'
 import HistoryTable from '@/components/HistoryTable'
 import type { EscrowAction } from '@/types'
 
-// When served by FastAPI at localhost:4000/ui, relative URLs resolve correctly.
-// For standalone Next.js dev (port 3000), set NEXT_PUBLIC_API_URL=http://localhost:4000
 const API = process.env.NEXT_PUBLIC_API_URL ?? ''
+const KEY_STORAGE = 'escrow_api_key'
+
+function useApiKey() {
+  const [key, setKeyState] = useState<string>('')
+
+  useEffect(() => {
+    setKeyState(localStorage.getItem(KEY_STORAGE) ?? '')
+  }, [])
+
+  const setKey = (k: string) => {
+    localStorage.setItem(KEY_STORAGE, k)
+    setKeyState(k)
+  }
+  const clearKey = () => {
+    localStorage.removeItem(KEY_STORAGE)
+    setKeyState('')
+  }
+  return { key, setKey, clearKey }
+}
+
+function authHeaders(key: string): Record<string, string> {
+  return key ? { 'X-Api-Key': key } : {}
+}
 
 export default function Dashboard() {
+  const { key, setKey, clearKey }        = useApiKey()
+  const [keyInput, setKeyInput]          = useState('')
+  const [authError, setAuthError]        = useState(false)
+
   const [pending, setPending]           = useState<EscrowAction[]>([])
   const [history, setHistory]           = useState<EscrowAction[]>([])
   const [focusedIdx, setFocusedIdx]     = useState(0)
@@ -23,32 +48,37 @@ export default function Dashboard() {
   // -------------------------------------------------------------------------
 
   const fetchPending = useCallback(async () => {
+    if (authError) return
     try {
-      const r = await fetch(`${API}/api/pending`)
+      const r = await fetch(`${API}/api/pending`, { headers: authHeaders(key) })
+      if (r.status === 401 || r.status === 403) { setAuthError(true); return }
       if (!r.ok) return
       setPending(await r.json())
       setLastRefresh(new Date().toLocaleTimeString())
     } catch {}
-  }, [])
+  }, [key, authError])
 
   const fetchHistory = useCallback(async () => {
+    if (authError) return
     try {
-      const r = await fetch(`${API}/api/history?limit=25`)
+      const r = await fetch(`${API}/api/history?limit=25`, { headers: authHeaders(key) })
+      if (r.status === 401 || r.status === 403) { setAuthError(true); return }
       if (!r.ok) return
       setHistory(await r.json())
     } catch {}
-  }, [])
+  }, [key, authError])
 
   useEffect(() => {
+    if (authError || !key) return
     fetchPending()
     fetchHistory()
 
-    // SSE for real-time updates; fall back to 30s safety-net poll on error.
     let es: EventSource | null = null
     let fallbackTimer: ReturnType<typeof setInterval> | null = null
 
     const connectSSE = () => {
-      es = new EventSource(`${API}/api/events`)
+      const url = key ? `${API}/api/events?api_key=${encodeURIComponent(key)}` : `${API}/api/events`
+      es = new EventSource(url)
       es.onmessage = (e) => {
         try {
           const msg = JSON.parse(e.data) as { type: string }
@@ -65,7 +95,6 @@ export default function Dashboard() {
       es.onerror = () => {
         es?.close()
         es = null
-        // SSE failed — activate fallback polling until we reconnect
         if (!fallbackTimer) {
           fallbackTimer = setInterval(() => {
             fetchPending()
@@ -80,7 +109,7 @@ export default function Dashboard() {
       es?.close()
       if (fallbackTimer) clearInterval(fallbackTimer)
     }
-  }, [fetchPending, fetchHistory])
+  }, [key, authError, fetchPending, fetchHistory])
 
   // Keep focusedIdx in bounds as list shrinks
   useEffect(() => {
@@ -102,19 +131,19 @@ export default function Dashboard() {
     try {
       await fetch(`${API}/api/resolve`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...authHeaders(key) },
         body: JSON.stringify({ action_id: id, decision: 'APPROVED' }),
       })
       setPending(prev => prev.filter(a => a.id !== id))
       fetchHistory()
     } catch {}
-  }, [fetchHistory])
+  }, [key, fetchHistory])
 
   const handleReject = useCallback(async (id: string, reason?: string) => {
     try {
       await fetch(`${API}/api/resolve`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...authHeaders(key) },
         body: JSON.stringify({ action_id: id, decision: 'REJECTED', rejection_reason: reason || null }),
       })
       setPending(prev => prev.filter(a => a.id !== id))
@@ -122,7 +151,7 @@ export default function Dashboard() {
       setRejectReason('')
       fetchHistory()
     } catch {}
-  }, [fetchHistory])
+  }, [key, fetchHistory])
 
   // -------------------------------------------------------------------------
   // Keyboard shortcuts: J = approve, K = reject, ↑↓ = navigate, Esc = cancel
@@ -160,7 +189,54 @@ export default function Dashboard() {
   }, [pending, focusedIdx, handleApprove])
 
   // -------------------------------------------------------------------------
-  // Render
+  // Auth gate — shown when no key is stored or when a 401/403 occurs
+  // -------------------------------------------------------------------------
+
+  if (!key || authError) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gray-950">
+        <div className="w-full max-w-sm space-y-5 p-8 border border-gray-800 rounded-2xl bg-gray-900">
+          <div className="flex items-center gap-2">
+            <svg className="w-5 h-5 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+            </svg>
+            <span className="font-semibold text-white">AgentEscrow</span>
+          </div>
+          {authError && (
+            <p className="text-sm text-red-400">Invalid or expired API key.</p>
+          )}
+          <p className="text-sm text-gray-400">
+            Enter your <code className="bg-gray-800 px-1 rounded text-gray-300">ESCROW_API_KEY</code> to continue.
+            Leave blank if auth is disabled.
+          </p>
+          <input
+            type="password"
+            autoFocus
+            value={keyInput}
+            onChange={e => setKeyInput(e.target.value)}
+            onKeyDown={e => {
+              if (e.key === 'Enter') {
+                setAuthError(false)
+                setKey(keyInput)
+              }
+            }}
+            placeholder="Paste API key…"
+            className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-indigo-500 transition-colors"
+          />
+          <button
+            onClick={() => { setAuthError(false); setKey(keyInput) }}
+            className="w-full py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-sm rounded-lg font-medium transition-colors"
+          >
+            Connect
+          </button>
+        </div>
+      </div>
+    )
+  }
+
+  // -------------------------------------------------------------------------
+  // Main dashboard
   // -------------------------------------------------------------------------
 
   return (
@@ -192,6 +268,13 @@ export default function Dashboard() {
             <span><kbd className="px-1.5 py-0.5 bg-gray-800 rounded border border-gray-700 font-mono">K</kbd> reject</span>
             <span><kbd className="px-1.5 py-0.5 bg-gray-800 rounded border border-gray-700 font-mono">↑↓</kbd> navigate</span>
           </span>
+          <button
+            onClick={() => { clearKey(); setPending([]); setHistory([]) }}
+            className="text-xs text-gray-600 hover:text-gray-400 transition-colors"
+            title="Sign out"
+          >
+            sign out
+          </button>
           <a href="/docs" target="_blank" rel="noopener noreferrer"
             className="hover:text-gray-200 transition-colors">
             API docs ↗

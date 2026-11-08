@@ -19,6 +19,7 @@ from .models import (
     WaitResponse,
 )
 from .policies import classify, load_policy
+from .auth import api_key_middleware
 from .forwarder import forward as _forward_to_upstream
 from .proxy_engine import process_mcp_call
 from .routes_ui import router as ui_router
@@ -63,6 +64,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.middleware("http")(api_key_middleware)
 app.include_router(ui_router)
 
 _WEB_OUT = Path(__file__).parent.parent / "web" / "out"

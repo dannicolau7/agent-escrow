@@ -333,3 +333,50 @@ async def test_sse_action_resolved_event(client):
     assert resolved, f"no action_resolved event; got {received}"
     assert resolved[0]["status"] == "APPROVED"
     ev._subscribers.clear()
+
+
+# ---------------------------------------------------------------------------
+# 16-18. Auth middleware
+# ---------------------------------------------------------------------------
+
+async def test_auth_disabled_in_dev_mode(client, monkeypatch):
+    monkeypatch.delenv("ESCROW_API_KEY", raising=False)
+    r = await client.get("/api/pending")
+    assert r.status_code == 200
+
+
+async def test_auth_missing_key_returns_401(client, monkeypatch):
+    monkeypatch.setenv("ESCROW_API_KEY", "secret123")
+    r = await client.get("/api/pending")
+    assert r.status_code == 401
+
+
+async def test_auth_wrong_key_returns_403(client, monkeypatch):
+    monkeypatch.setenv("ESCROW_API_KEY", "secret123")
+    r = await client.get("/api/pending", headers={"X-Api-Key": "wrong"})
+    assert r.status_code == 403
+
+
+async def test_auth_correct_bearer_token(client, monkeypatch):
+    monkeypatch.setenv("ESCROW_API_KEY", "secret123")
+    r = await client.get("/api/pending", headers={"Authorization": "Bearer secret123"})
+    assert r.status_code == 200
+
+
+async def test_auth_correct_x_api_key(client, monkeypatch):
+    monkeypatch.setenv("ESCROW_API_KEY", "secret123")
+    r = await client.get("/api/pending", headers={"X-Api-Key": "secret123"})
+    assert r.status_code == 200
+
+
+async def test_auth_mcp_endpoint_protected(client, monkeypatch):
+    monkeypatch.setenv("ESCROW_API_KEY", "secret123")
+    r = await client.post("/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                                         "params": {"name": "get_user", "arguments": {}}})
+    assert r.status_code == 401
+
+
+async def test_auth_health_always_public(client, monkeypatch):
+    monkeypatch.setenv("ESCROW_API_KEY", "secret123")
+    r = await client.get("/health")
+    assert r.status_code == 200
