@@ -18,9 +18,8 @@ import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
-from proxy import db, escrow
+from proxy import db
 from proxy.main import app
-from proxy.policies import load_policy
 from proxy.proxy_engine import EXECUTION_WAITERS, process_mcp_call
 
 pytestmark = pytest.mark.asyncio
@@ -34,10 +33,8 @@ pytestmark = pytest.mark.asyncio
 async def client(tmp_path):
     db.DB_PATH = tmp_path / "test_escrow.db"
     db._conn = None
-    escrow._pending.clear()
     EXECUTION_WAITERS.clear()
     db.init_db()
-    load_policy()
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
@@ -45,6 +42,7 @@ async def client(tmp_path):
 
     EXECUTION_WAITERS.clear()
     db._conn = None
+
 
 
 # ---------------------------------------------------------------------------

@@ -26,10 +26,9 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
 import proxy.forwarder as forwarder_module
-from proxy import db, escrow
+from proxy import db
 from proxy.config import classify_tool_call
 from proxy.main import app
-from proxy.policies import load_policy
 from proxy.proxy_engine import EXECUTION_WAITERS
 
 pytestmark = pytest.mark.asyncio
@@ -43,10 +42,8 @@ pytestmark = pytest.mark.asyncio
 async def client(tmp_path, monkeypatch):
     db.DB_PATH = tmp_path / "test_escrow.db"
     db._conn = None
-    escrow._pending.clear()
     EXECUTION_WAITERS.clear()
     db.init_db()
-    load_policy()
     monkeypatch.delenv("MCP_UPSTREAM_URL", raising=False)
     forwarder_module._test_transport = None
 

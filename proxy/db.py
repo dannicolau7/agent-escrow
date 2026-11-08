@@ -161,6 +161,14 @@ def update_action_status(
     return cur.rowcount > 0
 
 
+def count_pending() -> int:
+    conn = get_conn()
+    row = conn.execute(
+        "SELECT COUNT(*) FROM pending_actions WHERE status='PENDING'"
+    ).fetchone()
+    return row[0] if row else 0
+
+
 def reject_stale_pending(reason: str) -> int:
     """Mark all PENDING rows as REJECTED. Called on startup when in-memory waiters are gone."""
     conn = get_conn()

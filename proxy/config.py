@@ -8,41 +8,50 @@ import yaml
 
 POLICY_PATH = Path(__file__).parent / "policies.yaml"
 
+# Loaded once at import time; call load_policy() to force a reload (e.g. tests).
+_POLICIES: Dict[str, Any] = {}
 
-def load_policies() -> Dict[str, Any]:
+
+def load_policy() -> Dict[str, Any]:
+    """Read policies.yaml and cache the result.  Safe to call multiple times."""
+    global _POLICIES
     with open(POLICY_PATH, "r", encoding="utf-8") as fh:
-        return yaml.safe_load(fh) or {}
+        _POLICIES = yaml.safe_load(fh) or {}
+    return _POLICIES
 
 
-POLICIES = load_policies()
-
-DEFAULT_AUTO_APPROVE_PREFIXES = ("get_", "list_", "search_", "read_", "describe_")
-
-# Ordered by severity: first match wins.  Mutations are evaluated BEFORE safe
-# prefixes so that a name like "get_and_delete_user" is not auto-approved.
-DEFAULT_MUTATION_PATTERNS = (
-    (".*delete.*|.*drop.*|.*destroy.*|.*truncate.*|.*purge.*", "CRITICAL", "DATABASE"),
-    (".*refund.*|.*charge.*|.*transfer.*|.*pay.*", "HIGH", "FINANCIAL"),
-    (".*send.*", "MEDIUM", "COMMUNICATION"),
-    (".*update.*|.*write.*|.*push.*|.*create.*|.*insert.*|.*modify.*|.*edit.*|.*upload.*", "MEDIUM", "GENERIC_WRITE"),
-)
+def _policies() -> Dict[str, Any]:
+    if not _POLICIES:
+        load_policy()
+    return _POLICIES
 
 
-def classify_tool_call(tool_name: str):
-    """Return a risk classification dictionary for a tool name."""
-    policies = load_policies() if not POLICIES else POLICIES
-    rules = policies.get("rules", {})
+# ---------------------------------------------------------------------------
+# Classification
+# ---------------------------------------------------------------------------
+# Precedence (highest → lowest):
+#   1. always_hold list   → HOLD/MEDIUM/GENERIC_WRITE
+#   2. always_allow list  → AUTO_APPROVE/LOW/READ
+#   3. rules.mutations    → HOLD with declared risk/category (first match wins)
+#   4. rules.auto_approve_prefixes → AUTO_APPROVE/LOW/READ
+#   5. default_action     → HOLD/MEDIUM/GENERIC_WRITE
+# ---------------------------------------------------------------------------
 
-    # 1. Check mutation patterns FIRST — a "get_and_delete_user" must be HOLD,
-    #    not AUTO_APPROVE just because it starts with a safe prefix.
-    mutation_rules = rules.get("mutations", [])
-    if not mutation_rules:
-        mutation_rules = [
-            {"pattern": pattern, "risk_level": risk_level, "category": category}
-            for pattern, risk_level, category in DEFAULT_MUTATION_PATTERNS
-        ]
+def classify_tool_call(tool_name: str) -> Dict[str, str]:
+    """Return {"action", "risk_level", "category"} for a tool name."""
+    p = _policies()
+    rules = p.get("rules", {})
 
-    for rule in mutation_rules:
+    # 1. Explicit hold list (overrides everything, including safe prefixes)
+    if tool_name in p.get("always_hold", []):
+        return {"action": "HOLD", "risk_level": "MEDIUM", "category": "GENERIC_WRITE"}
+
+    # 2. Explicit allow list (overrides mutation patterns)
+    if tool_name in p.get("always_allow", []):
+        return {"action": "AUTO_APPROVE", "risk_level": "LOW", "category": "READ"}
+
+    # 3. Mutation patterns (checked before safe prefixes — bypass prevention)
+    for rule in rules.get("mutations", []):
         pattern = rule.get("pattern")
         if pattern and re.search(pattern, tool_name, re.IGNORECASE):
             return {
@@ -51,18 +60,13 @@ def classify_tool_call(tool_name: str):
                 "category": rule.get("category", "GENERIC_WRITE"),
             }
 
-    # 2. Only then check safe prefixes.
-    auto_approve_prefixes = rules.get("auto_approve_prefixes", list(DEFAULT_AUTO_APPROVE_PREFIXES))
-    for prefix in auto_approve_prefixes:
-        if str(tool_name).startswith(prefix):
+    # 4. Safe-read prefixes
+    for prefix in rules.get("auto_approve_prefixes", []):
+        if tool_name.startswith(prefix):
             return {"action": "AUTO_APPROVE", "risk_level": "LOW", "category": "READ"}
 
-    legacy_mutating = policies.get("mutating_tools", [])
-    if tool_name in legacy_mutating:
-        return {"action": "HOLD", "risk_level": "MEDIUM", "category": "GENERIC_WRITE"}
-
-    legacy_safe = policies.get("safe_tools", [])
-    if tool_name in legacy_safe:
-        return {"action": "AUTO_APPROVE", "risk_level": "LOW", "category": "READ"}
-
+    # 5. Default
     return {"action": "HOLD", "risk_level": "MEDIUM", "category": "GENERIC_WRITE"}
+
+
+load_policy()

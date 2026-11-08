@@ -1,46 +1,45 @@
-version: "1.0"
+version: "2.0"
 
-# Tools that require human approval before execution
-mutating_tools:
-  - file_write
-  - file_delete
-  - file_move
-  - file_rename
+rules:
+  # Auto-approve these tool prefixes (evaluated AFTER mutation patterns so a
+  # name like "get_and_delete_user" is never accidentally approved).
+  auto_approve_prefixes:
+    - "get_"
+    - "list_"
+    - "search_"
+    - "read_"
+    - "describe_"
+
+  # Mutation patterns evaluated in order; first match wins.
+  mutations:
+    - pattern: ".*delete.*|.*drop.*|.*destroy.*|.*truncate.*|.*purge.*"
+      risk_level: CRITICAL
+      category: DATABASE
+    - pattern: ".*refund.*|.*charge.*|.*transfer.*|.*pay.*"
+      risk_level: HIGH
+      category: FINANCIAL
+    - pattern: ".*send.*"
+      risk_level: MEDIUM
+      category: COMMUNICATION
+    - pattern: ".*update.*|.*write.*|.*push.*|.*create.*|.*insert.*|.*modify.*|.*edit.*|.*upload.*"
+      risk_level: MEDIUM
+      category: GENERIC_WRITE
+
+# Named tools that always require human approval, regardless of prefix rules.
+always_hold:
   - execute_code
   - run_command
-  - send_email
-  - send_message
-  - db_insert
-  - db_update
-  - db_delete
-  - api_post
-  - api_put
-  - api_patch
-  - api_delete
   - deploy
-  - git_push
-  - git_commit
   - git_reset
-  - create_pr
   - merge_pr
-  - create_branch
-  - delete_branch
 
-# Tools that are always safe (never held)
-safe_tools:
-  - file_read
-  - file_list
-  - file_stat
-  - search
+# Named tools that are always safe, regardless of pattern matches.
+always_allow:
   - web_search
-  - db_query
-  - api_get
   - git_log
   - git_status
   - git_diff
   - git_show
-  - list_prs
 
-# Default action for tools not in either list above
-# "hold" requires approval; "allow" proceeds immediately
+# Fallback for tools not matched by any rule above.
 default_action: hold
