@@ -75,6 +75,28 @@
 
   <script>
     // -------------------------------------------------------------------------
+    // API key (stored in this browser only; sent as X-Api-Key)
+    // -------------------------------------------------------------------------
+    const KEY_STORAGE = 'escrow_api_key';
+    function apiKey() { return localStorage.getItem(KEY_STORAGE) || ''; }
+    let askedForKey = false;   // ask once per page load, not on every poll
+    function askForKey(msg) {
+      if (askedForKey) return;
+      askedForKey = true;
+      const k = prompt((msg ? msg + '\n\n' : '') + 'Enter your AgentEscrow API key (leave blank if auth is disabled):', apiKey());
+      if (k !== null) { localStorage.setItem(KEY_STORAGE, k.trim()); askedForKey = false; }
+    }
+    async function api(path, opts = {}) {
+      const headers = Object.assign({}, opts.headers || {});
+      if (apiKey()) headers['X-Api-Key'] = apiKey();
+      const r = await fetch(path, Object.assign({}, opts, { headers }));
+      if (r.status === 401 || (r.status === 403 && path !== '/api/resolve')) {
+        askForKey(r.status === 401 ? 'An API key is required.' : 'That API key was rejected.');
+      }
+      return r;
+    }
+
+    // -------------------------------------------------------------------------
     // Constants
     // -------------------------------------------------------------------------
 
@@ -224,7 +246,7 @@
       if (card) { card.style.opacity = '0.4'; card.style.pointerEvents = 'none'; }
 
       try {
-        const r = await fetch('/api/resolve', {
+        const r = await api('/api/resolve', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ action_id: id, decision, rejection_reason: reason }),
@@ -270,7 +292,7 @@
 
     async function refreshPending() {
       try {
-        const r = await fetch('/api/pending');
+        const r = await api('/api/pending');
         if (!r.ok) return;
         const actions = await r.json();
 
@@ -310,7 +332,7 @@
 
     async function refreshHistory() {
       try {
-        const r = await fetch('/api/history?limit=25');
+        const r = await api('/api/history?limit=25');
         if (!r.ok) return;
         const rows = await r.json();
         const tbody = document.getElementById('history-body');

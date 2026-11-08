@@ -1,45 +1,48 @@
-"""Prometheus text exposition format for the /metrics endpoint."""
+"""Prometheus text exposition format for the /metrics endpoint.
+
+Values are computed from the database with aggregate queries, so they stay
+correct across restarts.  Review latency is exported as a real histogram.
+"""
 from __future__ import annotations
 
-from typing import Any, Dict, List, Tuple
+from typing import Any, List, Tuple
 
 from . import db
 
+# Review-latency histogram buckets, in seconds.
+_BUCKETS = (5, 15, 30, 60, 120, 300, 600, 1800, 3600)
 
-def _fetch(conn, sql: str, params: tuple = ()) -> List[Any]:
-    return conn.execute(sql, params).fetchall()
+
+def _esc(value: Any) -> str:
+    """Escape a Prometheus label value."""
+    return str(value).replace("\\", "\\\\").replace("\n", "\\n").replace('"', '\\"')
 
 
 def collect() -> str:
-    conn = db.get_conn()
+    pending: int = db._query("SELECT COUNT(*) FROM pending_actions WHERE status = 'PENDING'")[0][0]
 
-    pending: int = conn.execute(
-        "SELECT COUNT(*) FROM pending_actions WHERE status = 'PENDING'"
-    ).fetchone()[0]
-
-    action_rows = _fetch(
-        conn,
+    action_rows = db._query(
         "SELECT status, risk_level, category, COUNT(*) AS n "
-        "FROM pending_actions GROUP BY status, risk_level, category",
+        "FROM pending_actions GROUP BY status, risk_level, category"
     )
 
-    latency_rows = _fetch(
-        conn,
-        """
-        SELECT
-            (julianday(resolved_at) - julianday(created_at)) * 86400.0 AS secs
-        FROM pending_actions
-        WHERE resolved_at IS NOT NULL AND created_at IS NOT NULL
-        """,
+    exec_rows = db._query(
+        "SELECT execution_status, COUNT(*) AS n FROM pending_actions "
+        "WHERE execution_status IS NOT NULL GROUP BY execution_status"
     )
-    lat_seconds = [r[0] for r in latency_rows if r[0] is not None and r[0] >= 0]
-    lat_sum = sum(lat_seconds)
-    lat_count = len(lat_seconds)
 
-    audit_rows = _fetch(
-        conn,
-        "SELECT event_type, COUNT(*) AS n FROM audit_log GROUP BY event_type",
-    )
+    # Histogram over human-reviewed actions only (system timeouts excluded).
+    secs_expr = "(julianday(resolved_at) - julianday(created_at)) * 86400.0"
+    bucket_cols = ", ".join(f"SUM(CASE WHEN {secs_expr} <= {b} THEN 1 ELSE 0 END)" for b in _BUCKETS)
+    hist = db._query(
+        f"SELECT COUNT(*), COALESCE(SUM({secs_expr}), 0), {bucket_cols} FROM pending_actions "
+        "WHERE resolved_at IS NOT NULL AND created_at IS NOT NULL "
+        "AND COALESCE(resolved_by, '') != 'system'"
+    )[0]
+    lat_count, lat_sum = hist[0], float(hist[1] or 0.0)
+    bucket_counts = [int(v or 0) for v in hist[2:]]
+
+    audit_rows = db._query("SELECT event_type, COUNT(*) AS n FROM audit_log GROUP BY event_type")
 
     lines: List[str] = []
 
@@ -47,10 +50,7 @@ def collect() -> str:
         lines.append(f"# HELP {name} {help_text}")
         lines.append(f"# TYPE {name} {mtype}")
         for labels, value in samples:
-            if labels:
-                lines.append(f"{name}{{{labels}}} {value}")
-            else:
-                lines.append(f"{name} {value}")
+            lines.append(f"{name}{{{labels}}} {value}" if labels else f"{name} {value}")
 
     metric(
         "escrow_pending_count",
@@ -59,42 +59,51 @@ def collect() -> str:
         [("", pending)],
     )
 
-    action_samples = [
-        (
-            f'status="{r["status"]}",risk_level="{r["risk_level"]}",category="{r["category"]}"',
-            r["n"],
-        )
-        for r in action_rows
-    ]
     metric(
         "escrow_actions_total",
-        "Total tool calls processed, labelled by outcome and risk.",
+        "Held tool calls, labelled by outcome and risk.",
         "counter",
-        action_samples,
+        [
+            (f'status="{_esc(r["status"])}",risk_level="{_esc(r["risk_level"])}",category="{_esc(r["category"])}"', r["n"])
+            for r in action_rows
+        ],
     )
 
     metric(
+        "escrow_executions_total",
+        "Approved tool calls sent upstream, labelled by result.",
+        "counter",
+        [(f'result="{_esc(r["execution_status"])}"', r["n"]) for r in exec_rows],
+    )
+
+    # Histogram (cumulative buckets, as Prometheus expects).
+    lines.append("# HELP escrow_review_latency_seconds Time from hold to human decision.")
+    lines.append("# TYPE escrow_review_latency_seconds histogram")
+    for b, n in zip(_BUCKETS, bucket_counts):
+        lines.append(f'escrow_review_latency_seconds_bucket{{le="{b}"}} {n}')
+    lines.append(f'escrow_review_latency_seconds_bucket{{le="+Inf"}} {lat_count}')
+    lines.append(f"escrow_review_latency_seconds_sum {lat_sum:.3f}")
+    lines.append(f"escrow_review_latency_seconds_count {lat_count}")
+
+    # Kept for existing Grafana panels.
+    metric(
         "escrow_approval_latency_seconds_sum",
-        "Total seconds spent waiting for human review across all resolved actions.",
+        "Deprecated: use escrow_review_latency_seconds_sum.",
         "gauge",
         [("", f"{lat_sum:.3f}")],
     )
     metric(
         "escrow_approval_latency_seconds_count",
-        "Number of resolved actions used to compute the latency sum.",
+        "Deprecated: use escrow_review_latency_seconds_count.",
         "gauge",
         [("", lat_count)],
     )
 
-    audit_samples = [
-        (f'event_type="{r["event_type"]}"', r["n"])
-        for r in audit_rows
-    ]
     metric(
         "escrow_audit_events_total",
         "Total audit log entries, labelled by event type.",
         "counter",
-        audit_samples,
+        [(f'event_type="{_esc(r["event_type"])}"', r["n"]) for r in audit_rows],
     )
 
     return "\n".join(lines) + "\n"

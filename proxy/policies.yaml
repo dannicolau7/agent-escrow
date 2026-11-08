@@ -1,31 +1,46 @@
-version: "2.0"
+version: "3.0"
 
 rules:
-  # Auto-approve these tool prefixes (evaluated AFTER mutation patterns so a
-  # name like "get_and_delete_user" is never accidentally approved).
-  auto_approve_prefixes:
-    - "get_"
-    - "list_"
-    - "search_"
-    - "read_"
-    - "describe_"
+  # A tool is auto-approved only when its FIRST word is one of these verbs and
+  # no mutation rule below matches.  Words are split on _ - . and camelCase,
+  # so "get_user", "get-user" and "getUser" all start with "get".
+  auto_approve_verbs:
+    - get
+    - list
+    - search
+    - read
+    - describe
 
-  # Mutation patterns evaluated in order; first match wins.
+  # Words that chain a second operation onto a read.  Any tool name containing
+  # one of these is held, so "get_and_remove_user" can't sneak through.
+  chain_words: [and, then, or, also, plus]
+
+  # Mutation rules, evaluated in order; first match wins.
+  # `words` match whole words of the tool name (case-insensitive).
+  # `pattern` (optional) is a regex matched against the full name.
+  # `override_read: true` makes the rule hold even names that start with a
+  # read verb ("get_user_delete").  Other rules only apply to names that do
+  # NOT start with a read verb, so "read_email" and "get_post" stay reads.
   mutations:
-    - pattern: ".*delete.*|.*drop.*|.*destroy.*|.*truncate.*|.*purge.*"
+    - words: [delete, drop, destroy, truncate, purge, remove, erase, wipe, kill,
+              terminate, rm, del, reset, revoke, shutdown, uninstall]
       risk_level: CRITICAL
       category: DATABASE
-    - pattern: ".*refund.*|.*charge.*|.*transfer.*|.*pay.*"
+      override_read: true
+    - words: [refund, charge, transfer, pay, payout, withdraw, deposit, wire,
+              purchase, buy, sell, trade, capture]
       risk_level: HIGH
       category: FINANCIAL
-    - pattern: ".*send.*"
+    - words: [send, email, mail, notify, message, publish, post, tweet, reply, invite]
       risk_level: MEDIUM
       category: COMMUNICATION
-    - pattern: ".*update.*|.*write.*|.*push.*|.*create.*|.*insert.*|.*modify.*|.*edit.*|.*upload.*"
+    - words: [update, write, push, create, insert, modify, edit, upload, set, put,
+              patch, move, rename, merge, commit, deploy, execute, exec, run,
+              apply, approve, grant, add, save, replace, restore, import]
       risk_level: MEDIUM
       category: GENERIC_WRITE
 
-# Named tools that always require human approval, regardless of prefix rules.
+# Named tools that always require human approval, regardless of rules.
 always_hold:
   - execute_code
   - run_command
@@ -33,7 +48,7 @@ always_hold:
   - git_reset
   - merge_pr
 
-# Named tools that are always safe, regardless of pattern matches.
+# Named tools that are always safe, regardless of rules.
 always_allow:
   - web_search
   - git_log
@@ -41,5 +56,5 @@ always_allow:
   - git_diff
   - git_show
 
-# Fallback for tools not matched by any rule above.
+# Fallback for tools not matched by any rule above: always hold.
 default_action: hold

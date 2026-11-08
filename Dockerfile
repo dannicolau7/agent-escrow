@@ -25,10 +25,14 @@ COPY --from=ui-builder /app/web/out ./web/out
 
 # Data directory for SQLite (overridable with DB_PATH env var)
 RUN mkdir -p /data && chown escrow /data
-ENV DB_PATH=/data/escrow.db
+ENV DB_PATH=/data/escrow.db \
+    ESCROW_MODE=production \
+    PYTHONUNBUFFERED=1
 
 USER escrow
 
 EXPOSE 4000
 
-CMD ["uvicorn", "proxy.main:app", "--host", "0.0.0.0", "--port", "4000"]
+# --proxy-headers so client IPs in the audit log are correct behind a TLS proxy.
+# One worker only: held actions live in this process (see DEPLOY.md).
+CMD ["uvicorn", "proxy.main:app", "--host", "0.0.0.0", "--port", "4000", "--workers", "1", "--proxy-headers"]

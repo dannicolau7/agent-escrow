@@ -1,17 +1,24 @@
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
+import os as _os
 import sqlite3
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-import os as _os
 DB_PATH: Path = Path(_os.environ.get("DB_PATH") or Path(__file__).parent / "escrow.db")
 
-_lock = threading.Lock()
+# One shared connection; every statement (reads included) goes through _lock
+# because sync routes run in FastAPI's threadpool while async routes run on
+# the event loop thread.
+_lock = threading.RLock()
 _conn: Optional[sqlite3.Connection] = None
+
+_MAX_RESULT_CHARS = 20_000
 
 
 def _utcnow() -> str:
@@ -33,25 +40,16 @@ def get_db() -> sqlite3.Connection:
     return get_conn()
 
 
+def _query(sql: str, params: tuple | list = ()) -> List[sqlite3.Row]:
+    conn = get_conn()
+    with _lock:
+        return conn.execute(sql, params).fetchall()
+
+
 def ensure_db() -> None:
     conn = get_conn()
     with _lock:
         conn.executescript("""
-            CREATE TABLE IF NOT EXISTS calls (
-                call_id       TEXT PRIMARY KEY,
-                agent_id      TEXT NOT NULL,
-                tool_name     TEXT NOT NULL,
-                tool_input    TEXT NOT NULL,
-                status        TEXT NOT NULL DEFAULT 'pending',
-                is_mutating   INTEGER NOT NULL DEFAULT 0,
-                policy_reason TEXT,
-                created_at    TEXT NOT NULL,
-                resolved_at   TEXT,
-                resolved_by   TEXT
-            );
-            CREATE INDEX IF NOT EXISTS idx_calls_status ON calls(status);
-            CREATE INDEX IF NOT EXISTS idx_calls_agent  ON calls(agent_id);
-
             CREATE TABLE IF NOT EXISTS pending_actions (
                 id               TEXT PRIMARY KEY,
                 rpc_id           TEXT NOT NULL,
@@ -65,7 +63,10 @@ def ensure_db() -> None:
                 submitted_by     TEXT,
                 resolved_by      TEXT,
                 created_at       TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                resolved_at      TEXT
+                resolved_at      TEXT,
+                execution_status TEXT,
+                execution_result TEXT,
+                executed_at      TEXT
             );
             CREATE INDEX IF NOT EXISTS idx_pending_actions_status ON pending_actions(status);
             CREATE INDEX IF NOT EXISTS idx_pending_actions_created_at ON pending_actions(created_at);
@@ -77,7 +78,9 @@ def ensure_db() -> None:
                 actor       TEXT,
                 ip_address  TEXT,
                 detail      TEXT,
-                created_at  TEXT NOT NULL
+                created_at  TEXT NOT NULL,
+                prev_hash   TEXT,
+                hash        TEXT
             );
             CREATE INDEX IF NOT EXISTS idx_audit_log_action_id  ON audit_log(action_id);
             CREATE INDEX IF NOT EXISTS idx_audit_log_event_type ON audit_log(event_type);
@@ -87,6 +90,11 @@ def ensure_db() -> None:
         for migration in (
             "ALTER TABLE pending_actions ADD COLUMN resolved_by TEXT",
             "ALTER TABLE pending_actions ADD COLUMN submitted_by TEXT",
+            "ALTER TABLE pending_actions ADD COLUMN execution_status TEXT",
+            "ALTER TABLE pending_actions ADD COLUMN execution_result TEXT",
+            "ALTER TABLE pending_actions ADD COLUMN executed_at TEXT",
+            "ALTER TABLE audit_log ADD COLUMN prev_hash TEXT",
+            "ALTER TABLE audit_log ADD COLUMN hash TEXT",
         ):
             try:
                 conn.execute(migration)
@@ -101,36 +109,9 @@ def init_db() -> None:
     ensure_db()
 
 
-def insert_call(
-    *,
-    call_id: str,
-    agent_id: str,
-    tool_name: str,
-    tool_input: Dict[str, Any],
-    is_mutating: bool,
-    policy_reason: Optional[str],
-) -> None:
-    conn = get_conn()
-    status = "pending" if is_mutating else "allowed"
-    with _lock:
-        conn.execute(
-            """INSERT INTO calls
-               (call_id, agent_id, tool_name, tool_input, status,
-                is_mutating, policy_reason, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-            (
-                call_id,
-                agent_id,
-                tool_name,
-                json.dumps(tool_input),
-                status,
-                1 if is_mutating else 0,
-                policy_reason,
-                _utcnow(),
-            ),
-        )
-        conn.commit()
-
+# ---------------------------------------------------------------------------
+# Actions
+# ---------------------------------------------------------------------------
 
 def insert_action(
     *,
@@ -188,103 +169,96 @@ def update_action_status(
     return cur.rowcount > 0
 
 
-def count_pending() -> int:
-    conn = get_conn()
-    row = conn.execute(
-        "SELECT COUNT(*) FROM pending_actions WHERE status='PENDING'"
-    ).fetchone()
-    return row[0] if row else 0
+def record_execution(action_id: str, status: str, result: Any) -> None:
+    """Store what happened when an approved action was sent upstream.
 
-
-def reject_stale_pending(reason: str) -> int:
-    """Mark all PENDING rows as REJECTED. Called on startup when in-memory waiters are gone."""
+    status is SUCCEEDED or FAILED.  The upstream response is stored as JSON,
+    truncated to keep the table small.
+    """
+    text = json.dumps(result, default=str)
+    if len(text) > _MAX_RESULT_CHARS:
+        text = text[:_MAX_RESULT_CHARS] + "…[truncated]"
     conn = get_conn()
     with _lock:
-        cur = conn.execute(
-            "UPDATE pending_actions SET status='REJECTED', rejection_reason=?, resolved_at=? WHERE status='PENDING'",
+        conn.execute(
+            "UPDATE pending_actions SET execution_status=?, execution_result=?, executed_at=? WHERE id=?",
+            (status, text, _utcnow(), action_id),
+        )
+        conn.commit()
+
+
+def get_action(action_id: str) -> Optional[Dict[str, Any]]:
+    rows = _query("SELECT * FROM pending_actions WHERE id = ?", (action_id,))
+    return dict(rows[0]) if rows else None
+
+
+def count_pending() -> int:
+    rows = _query("SELECT COUNT(*) FROM pending_actions WHERE status='PENDING'")
+    return rows[0][0] if rows else 0
+
+
+def reject_stale_pending(reason: str) -> List[str]:
+    """Mark all PENDING rows as REJECTED. Called on startup when in-memory
+    waiters are gone.  Returns the ids that were rejected.
+
+    NOTE: this assumes a single proxy process owns the database.  Running
+    several instances against one database is not supported yet.
+    """
+    conn = get_conn()
+    with _lock:
+        ids = [r[0] for r in conn.execute("SELECT id FROM pending_actions WHERE status='PENDING'")]
+        conn.execute(
+            "UPDATE pending_actions SET status='REJECTED', rejection_reason=?, resolved_by='system', resolved_at=? WHERE status='PENDING'",
             (reason, _utcnow()),
         )
         conn.commit()
-    return cur.rowcount
+    return ids
+
+
+def _decode_row(row: sqlite3.Row) -> Dict[str, Any]:
+    item = dict(row)
+    try:
+        item["raw_arguments"] = json.loads(item["raw_arguments"])
+    except (TypeError, json.JSONDecodeError):
+        item["raw_arguments"] = {}
+    return item
 
 
 def get_pending_actions() -> List[Dict[str, Any]]:
-    conn = get_conn()
-    rows = conn.execute(
-        "SELECT * FROM pending_actions WHERE status = 'PENDING' ORDER BY created_at ASC"
-    ).fetchall()
-    items: List[Dict[str, Any]] = []
-    for row in rows:
-        item = dict(row)
-        try:
-            item["raw_arguments"] = json.loads(item["raw_arguments"])
-        except (TypeError, json.JSONDecodeError):
-            item["raw_arguments"] = {}
-        items.append(item)
-    return items
+    rows = _query("SELECT * FROM pending_actions WHERE status = 'PENDING' ORDER BY created_at ASC")
+    return [_decode_row(r) for r in rows]
 
 
 def get_resolved_history(limit: int = 20) -> List[Dict[str, Any]]:
-    conn = get_conn()
-    rows = conn.execute(
+    limit = max(1, min(int(limit), 1000))
+    rows = _query(
         "SELECT * FROM pending_actions WHERE status != 'PENDING' ORDER BY resolved_at DESC LIMIT ?",
         (limit,),
-    ).fetchall()
-    return [dict(row) for row in rows]
-
-
-def get_call(call_id: str) -> Optional[Dict[str, Any]]:
-    conn = get_conn()
-    row = conn.execute(
-        "SELECT * FROM calls WHERE call_id = ?", (call_id,)
-    ).fetchone()
-    if row is None:
-        return None
-    d = dict(row)
-    d["tool_input"] = json.loads(d["tool_input"])
-    return d
-
-
-def update_call_status(
-    call_id: str,
-    status: str,
-    resolved_by: Optional[str] = None,
-) -> bool:
-    """Update status only if currently 'pending'. Returns True if updated."""
-    conn = get_conn()
-    with _lock:
-        cur = conn.execute(
-            """UPDATE calls
-               SET status = ?, resolved_at = ?, resolved_by = ?
-               WHERE call_id = ? AND status = 'pending'""",
-            (status, _utcnow(), resolved_by, call_id),
-        )
-        conn.commit()
-    return cur.rowcount > 0
-
-
-def list_calls(status: Optional[str] = None) -> List[Dict[str, Any]]:
-    conn = get_conn()
-    if status:
-        rows = conn.execute(
-            "SELECT * FROM calls WHERE status = ? ORDER BY created_at DESC",
-            (status,),
-        ).fetchall()
-    else:
-        rows = conn.execute(
-            "SELECT * FROM calls ORDER BY created_at DESC"
-        ).fetchall()
-    result = []
-    for row in rows:
-        d = dict(row)
-        d["tool_input"] = json.loads(d["tool_input"])
-        result.append(d)
-    return result
+    )
+    return [_decode_row(r) for r in rows]
 
 
 # ---------------------------------------------------------------------------
-# Audit log
+# Audit log — append-only, hash-chained
 # ---------------------------------------------------------------------------
+# Each row stores prev_hash (the previous row's hash) and
+#   hash = HMAC-SHA256(key, prev_hash + canonical JSON of the row)
+# with key = ESCROW_AUDIT_KEY (plain SHA-256 if unset).  Editing or deleting
+# any row breaks every hash after it, which verify_audit_chain() detects.
+# With ESCROW_AUDIT_KEY set, someone with write access to the database but not
+# the key cannot rebuild a valid chain.
+
+_AUDIT_FIELDS = ("event_type", "action_id", "actor", "ip_address", "detail", "created_at")
+
+
+def _audit_digest(prev_hash: str, fields: Dict[str, Any]) -> str:
+    canonical = json.dumps({k: fields.get(k) for k in _AUDIT_FIELDS}, sort_keys=True, separators=(",", ":"))
+    msg = (prev_hash + canonical).encode()
+    key = _os.environ.get("ESCROW_AUDIT_KEY", "")
+    if key:
+        return hmac.new(key.encode(), msg, hashlib.sha256).hexdigest()
+    return hashlib.sha256(msg).hexdigest()
+
 
 def insert_audit_log(
     event_type: str,
@@ -295,29 +269,50 @@ def insert_audit_log(
     detail: Optional[Dict[str, Any]] = None,
 ) -> None:
     conn = get_conn()
+    fields = {
+        "event_type": event_type,
+        "action_id": action_id,
+        "actor": actor,
+        "ip_address": ip_address,
+        "detail": json.dumps(detail, sort_keys=True, default=str) if detail is not None else None,
+        "created_at": _utcnow(),
+    }
     with _lock:
+        last = conn.execute("SELECT hash FROM audit_log ORDER BY id DESC LIMIT 1").fetchone()
+        prev_hash = (last[0] if last and last[0] else "")
+        digest = _audit_digest(prev_hash, fields)
         conn.execute(
             """INSERT INTO audit_log
-               (event_type, action_id, actor, ip_address, detail, created_at)
-               VALUES (?, ?, ?, ?, ?, ?)""",
-            (
-                event_type,
-                action_id,
-                actor,
-                ip_address,
-                json.dumps(detail) if detail is not None else None,
-                _utcnow(),
-            ),
+               (event_type, action_id, actor, ip_address, detail, created_at, prev_hash, hash)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (*(fields[k] for k in _AUDIT_FIELDS), prev_hash, digest),
         )
         conn.commit()
+
+
+def verify_audit_chain() -> Dict[str, Any]:
+    """Recompute the chain.  Returns {"ok", "checked", "first_bad_id"}."""
+    rows = _query("SELECT * FROM audit_log ORDER BY id ASC")
+    prev = ""
+    checked = 0
+    for row in rows:
+        r = dict(row)
+        if r.get("hash") is None:  # rows written before hashing existed
+            continue
+        if r.get("prev_hash") != prev or _audit_digest(prev, r) != r["hash"]:
+            return {"ok": False, "checked": checked, "first_bad_id": r["id"]}
+        prev = r["hash"]
+        checked += 1
+    return {"ok": True, "checked": checked, "first_bad_id": None}
 
 
 def get_audit_log(
     limit: int = 50,
     action_id: Optional[str] = None,
     event_type: Optional[str] = None,
+    since: Optional[str] = None,
+    until: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
-    conn = get_conn()
     clauses: List[str] = []
     params: List[Any] = []
     if action_id:
@@ -326,11 +321,15 @@ def get_audit_log(
     if event_type:
         clauses.append("event_type = ?")
         params.append(event_type)
+    if since:
+        clauses.append("created_at >= ?")
+        params.append(since)
+    if until:
+        clauses.append("created_at <= ?")
+        params.append(until)
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-    params.append(limit)
-    rows = conn.execute(
-        f"SELECT * FROM audit_log {where} ORDER BY id DESC LIMIT ?", params
-    ).fetchall()
+    params.append(max(1, min(int(limit), 100_000)))
+    rows = _query(f"SELECT * FROM audit_log {where} ORDER BY id DESC LIMIT ?", params)
     result = []
     for row in rows:
         d = dict(row)
