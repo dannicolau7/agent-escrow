@@ -7,8 +7,10 @@ services:
       # Persist the SQLite database outside the container
       - escrow-data:/data
     environment:
-      # Set to restrict dashboard and /mcp access to key holders.
+      # Named keys: pipe-separated label:role:key triples.
       # Leave unset for open dev mode.
+      - ESCROW_KEYS=${ESCROW_KEYS:-}
+      # Legacy single admin key (backward compat).
       - ESCROW_API_KEY=${ESCROW_API_KEY:-}
       # Set to forward approved tool calls to a real MCP server.
       - MCP_UPSTREAM_URL=${MCP_UPSTREAM_URL:-}
