@@ -268,8 +268,10 @@ def test_restart_rejects_pending_and_agent_gets_error(stack):
     stack.stop_proxy()
     t.join(15)
     resp = box.get("resp")
-    # The agent must get an error (or a dropped connection), never a success.
-    assert resp is None or "result" not in resp.json()
+    # The agent must get an error, a dropped connection, or an empty error
+    # response from the shutting-down server, never a success.
+    if resp is not None and resp.status_code == 200 and resp.content:
+        assert "result" not in resp.json()
 
     stack.start_proxy()
     assert stack.api("GET", "/api/pending", "k-viewer").json() == []
