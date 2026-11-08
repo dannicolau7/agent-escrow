@@ -8,7 +8,7 @@ from pydantic import BaseModel
 
 from . import db
 from .auth import require_approver, require_viewer
-from .db import get_pending_actions, get_resolved_history
+from .db import get_audit_log, get_pending_actions, get_resolved_history
 from .events import broadcast, subscribe
 from .proxy_engine import resolve_waiter
 
@@ -46,6 +46,15 @@ async def resolve_action(req: ResolveRequest, request: Request):
     resolve_waiter(req.action_id, req.decision, req.rejection_reason)
     broadcast("action_resolved", {"action_id": req.action_id, "status": req.decision})
 
+    event_type = "action.approved" if req.decision == "APPROVED" else "action.rejected"
+    db.insert_audit_log(
+        event_type,
+        action_id=req.action_id,
+        actor=resolved_by,
+        ip_address=request.client.host if request.client else None,
+        detail={"rejection_reason": req.rejection_reason} if req.rejection_reason else None,
+    )
+
     return {"status": "ok", "action_id": req.action_id, "resolved_as": req.decision, "resolved_by": resolved_by}
 
 
@@ -63,3 +72,13 @@ async def sse_events():
 def list_history(limit: int = 20):
     db.ensure_db()
     return get_resolved_history(limit)
+
+
+@router.get("/api/audit", dependencies=[Depends(require_viewer)])
+def list_audit(
+    limit: int = 50,
+    action_id: Optional[str] = None,
+    event_type: Optional[str] = None,
+):
+    db.ensure_db()
+    return get_audit_log(limit=limit, action_id=action_id, event_type=event_type)

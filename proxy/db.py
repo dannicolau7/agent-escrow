@@ -62,20 +62,37 @@ def ensure_db() -> None:
                 raw_arguments    TEXT NOT NULL,
                 status           TEXT NOT NULL,
                 rejection_reason TEXT,
+                submitted_by     TEXT,
                 resolved_by      TEXT,
                 created_at       TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 resolved_at      TEXT
             );
             CREATE INDEX IF NOT EXISTS idx_pending_actions_status ON pending_actions(status);
             CREATE INDEX IF NOT EXISTS idx_pending_actions_created_at ON pending_actions(created_at);
+
+            CREATE TABLE IF NOT EXISTS audit_log (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                event_type  TEXT NOT NULL,
+                action_id   TEXT,
+                actor       TEXT,
+                ip_address  TEXT,
+                detail      TEXT,
+                created_at  TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_audit_log_action_id  ON audit_log(action_id);
+            CREATE INDEX IF NOT EXISTS idx_audit_log_event_type ON audit_log(event_type);
+            CREATE INDEX IF NOT EXISTS idx_audit_log_created_at ON audit_log(created_at);
         """)
         conn.commit()
-        # Live migration for databases created before resolved_by was added.
-        try:
-            conn.execute("ALTER TABLE pending_actions ADD COLUMN resolved_by TEXT")
-            conn.commit()
-        except sqlite3.OperationalError:
-            pass  # column already exists
+        for migration in (
+            "ALTER TABLE pending_actions ADD COLUMN resolved_by TEXT",
+            "ALTER TABLE pending_actions ADD COLUMN submitted_by TEXT",
+        ):
+            try:
+                conn.execute(migration)
+                conn.commit()
+            except sqlite3.OperationalError:
+                pass  # column already exists
 
 
 def init_db() -> None:
@@ -124,6 +141,7 @@ def insert_action(
     risk_level: str,
     reason: str,
     args: Dict[str, Any],
+    submitted_by: Optional[str] = None,
 ) -> None:
     conn = get_conn()
     with _lock:
@@ -131,8 +149,8 @@ def insert_action(
             """
             INSERT INTO pending_actions (
                 id, rpc_id, tool_name, category, risk_level, reason,
-                raw_arguments, status, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, 'PENDING', ?)
+                raw_arguments, status, submitted_by, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, 'PENDING', ?, ?)
             """,
             (
                 action_id,
@@ -142,6 +160,7 @@ def insert_action(
                 risk_level,
                 reason,
                 json.dumps(args),
+                submitted_by,
                 _utcnow(),
             ),
         )
@@ -259,5 +278,66 @@ def list_calls(status: Optional[str] = None) -> List[Dict[str, Any]]:
     for row in rows:
         d = dict(row)
         d["tool_input"] = json.loads(d["tool_input"])
+        result.append(d)
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Audit log
+# ---------------------------------------------------------------------------
+
+def insert_audit_log(
+    event_type: str,
+    *,
+    action_id: Optional[str] = None,
+    actor: Optional[str] = None,
+    ip_address: Optional[str] = None,
+    detail: Optional[Dict[str, Any]] = None,
+) -> None:
+    conn = get_conn()
+    with _lock:
+        conn.execute(
+            """INSERT INTO audit_log
+               (event_type, action_id, actor, ip_address, detail, created_at)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (
+                event_type,
+                action_id,
+                actor,
+                ip_address,
+                json.dumps(detail) if detail is not None else None,
+                _utcnow(),
+            ),
+        )
+        conn.commit()
+
+
+def get_audit_log(
+    limit: int = 50,
+    action_id: Optional[str] = None,
+    event_type: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    conn = get_conn()
+    clauses: List[str] = []
+    params: List[Any] = []
+    if action_id:
+        clauses.append("action_id = ?")
+        params.append(action_id)
+    if event_type:
+        clauses.append("event_type = ?")
+        params.append(event_type)
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    params.append(limit)
+    rows = conn.execute(
+        f"SELECT * FROM audit_log {where} ORDER BY id DESC LIMIT ?", params
+    ).fetchall()
+    result = []
+    for row in rows:
+        d = dict(row)
+        if d.get("detail"):
+            try:
+                d["detail"] = json.loads(d["detail"])
+            except (TypeError, json.JSONDecodeError):
+                pass
         result.append(d)
     return result

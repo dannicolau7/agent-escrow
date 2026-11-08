@@ -20,9 +20,8 @@ from .routes_ui import router as ui_router
 async def lifespan(app: FastAPI):
     db.init_db()
     load_policy()
-    # PENDING rows from a previous process have no live asyncio.Event —
-    # they can never be resolved, so reject them immediately.
-    db.reject_stale_pending("Server restarted; action could not be held.")
+    stale = db.reject_stale_pending("Server restarted; action could not be held.")
+    db.insert_audit_log("server.started", detail={"stale_purged": stale})
     yield
 
 
@@ -84,4 +83,11 @@ async def handle_mcp(request: Request):
     if args is not None and not isinstance(args, dict):
         return {"jsonrpc": "2.0", "id": rpc_id, "error": {"code": -32602, "message": "Invalid params: arguments must be an object"}}
 
-    return await process_mcp_call(payload, forward_headers=dict(request.headers))
+    submitter = getattr(request.state, "key_label", None)
+    client_ip = request.client.host if request.client else None
+    return await process_mcp_call(
+        payload,
+        forward_headers=dict(request.headers),
+        submitted_by=submitter,
+        ip_address=client_ip,
+    )

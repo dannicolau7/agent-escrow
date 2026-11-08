@@ -34,6 +34,7 @@ export default function HistoryTable({ items }: { items: EscrowAction[] }) {
             <th className="px-4 py-3 font-medium">Tool</th>
             <th className="px-4 py-3 font-medium">Risk</th>
             <th className="px-4 py-3 font-medium">Decision</th>
+            <th className="px-4 py-3 font-medium">By</th>
             <th className="px-4 py-3 font-medium">Note</th>
           </tr>
         </thead>
@@ -54,6 +55,18 @@ export default function HistoryTable({ items }: { items: EscrowAction[] }) {
                 </td>
                 <td className={`px-4 py-3 font-semibold ${approved ? 'text-green-400' : 'text-red-400'}`}>
                   {item.status}
+                </td>
+                <td className="px-4 py-3 text-gray-500 text-xs whitespace-nowrap">
+                  {item.submitted_by ? (
+                    <span className="font-mono">{item.submitted_by}</span>
+                  ) : null}
+                  {item.submitted_by && item.resolved_by ? (
+                    <span className="mx-1 text-gray-700">→</span>
+                  ) : null}
+                  {item.resolved_by ? (
+                    <span className="font-mono">{item.resolved_by}</span>
+                  ) : null}
+                  {!item.submitted_by && !item.resolved_by ? '–' : null}
                 </td>
                 <td className="px-4 py-3 text-gray-500 text-xs max-w-xs truncate">
                   {item.rejection_reason || '–'}

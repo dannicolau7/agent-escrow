@@ -8,6 +8,8 @@ export interface EscrowAction {
   raw_arguments: Record<string, unknown>
   status: string
   rejection_reason: string | null
+  submitted_by: string | null
+  resolved_by: string | null
   created_at: string
   resolved_at: string | null
 }

@@ -627,3 +627,119 @@ async def test_rbac_legacy_escrow_api_key_is_admin(client, monkeypatch):
 
     r_pending = await client.get("/api/pending", headers={"X-Api-Key": "legacy_key"})
     assert r_pending.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# Audit trail tests
+# ---------------------------------------------------------------------------
+
+async def test_audit_action_created_on_escrow(client):
+    t = asyncio.create_task(client.post("/mcp", json={
+        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": {"name": "delete_record", "arguments": {}},
+    }))
+    await asyncio.sleep(0.05)
+
+    pending = (await client.get("/api/pending")).json()
+    action_id = pending[0]["id"]
+
+    audit = (await client.get(f"/api/audit?action_id={action_id}")).json()
+    created = [e for e in audit if e["event_type"] == "action.created"]
+    assert created, "expected action.created entry"
+    assert created[0]["detail"]["tool_name"] == "delete_record"
+    assert created[0]["detail"]["risk_level"] == "CRITICAL"
+
+    await client.post("/api/resolve", json={"action_id": action_id, "decision": "APPROVED"})
+    await t
+
+
+async def test_audit_action_approved(client):
+    t = asyncio.create_task(client.post("/mcp", json={
+        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": {"name": "delete_record", "arguments": {}},
+    }))
+    await asyncio.sleep(0.05)
+
+    pending = (await client.get("/api/pending")).json()
+    action_id = pending[0]["id"]
+    await client.post("/api/resolve", json={"action_id": action_id, "decision": "APPROVED"})
+    await t
+
+    audit = (await client.get(f"/api/audit?action_id={action_id}")).json()
+    approved = [e for e in audit if e["event_type"] == "action.approved"]
+    assert approved, "expected action.approved entry"
+    assert approved[0]["action_id"] == action_id
+
+
+async def test_audit_action_rejected_with_reason(client):
+    t = asyncio.create_task(client.post("/mcp", json={
+        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": {"name": "delete_record", "arguments": {}},
+    }))
+    await asyncio.sleep(0.05)
+
+    pending = (await client.get("/api/pending")).json()
+    action_id = pending[0]["id"]
+    await client.post("/api/resolve", json={
+        "action_id": action_id, "decision": "REJECTED", "rejection_reason": "not authorised"
+    })
+    await t
+
+    audit = (await client.get(f"/api/audit?action_id={action_id}")).json()
+    rejected = [e for e in audit if e["event_type"] == "action.rejected"]
+    assert rejected
+    assert rejected[0]["detail"]["rejection_reason"] == "not authorised"
+
+
+async def test_audit_timeout(client):
+    from proxy.proxy_engine import process_mcp_call
+    payload = {
+        "jsonrpc": "2.0", "id": 99, "method": "tools/call",
+        "params": {"name": "drop_table", "arguments": {}},
+    }
+    result = await process_mcp_call(payload, timeout=0.05)
+    assert "error" in result
+
+    action_id = None
+    for row in db.get_audit_log(event_type="action.created"):
+        if row["detail"] and row["detail"].get("tool_name") == "drop_table":
+            action_id = row["action_id"]
+            break
+
+    assert action_id, "no action.created entry for drop_table"
+    audit = db.get_audit_log(action_id=action_id)
+    timeout_entries = [e for e in audit if e["event_type"] == "action.timeout"]
+    assert timeout_entries, "expected action.timeout entry"
+
+
+async def test_audit_submitted_by_in_pending_actions(client, monkeypatch):
+    monkeypatch.setenv("ESCROW_KEYS", "mybot:agent:sk_bot")
+    t = asyncio.create_task(client.post("/mcp", json={
+        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": {"name": "delete_record", "arguments": {}},
+    }, headers={"X-Api-Key": "sk_bot"}))
+    await asyncio.sleep(0.05)
+
+    # Switch to admin key to read pending
+    monkeypatch.delenv("ESCROW_KEYS")
+    pending = (await client.get("/api/pending")).json()
+    assert pending[0]["submitted_by"] == "mybot"
+
+    await client.post("/api/resolve", json={"action_id": pending[0]["id"], "decision": "APPROVED"})
+    await t
+
+
+async def test_audit_endpoint_filters_by_event_type(client):
+    t = asyncio.create_task(client.post("/mcp", json={
+        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": {"name": "delete_record", "arguments": {}},
+    }))
+    await asyncio.sleep(0.05)
+    pending = (await client.get("/api/pending")).json()
+    action_id = pending[0]["id"]
+    await client.post("/api/resolve", json={"action_id": action_id, "decision": "APPROVED"})
+    await t
+
+    only_created = (await client.get("/api/audit?event_type=action.created")).json()
+    assert all(e["event_type"] == "action.created" for e in only_created)
+    assert any(e["action_id"] == action_id for e in only_created)

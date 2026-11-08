@@ -17,6 +17,8 @@ async def process_mcp_call(
     payload: dict,
     timeout: float = 300.0,
     forward_headers: dict | None = None,
+    submitted_by: str | None = None,
+    ip_address: str | None = None,
 ) -> dict:
     db.ensure_db()
     rpc_id = payload.get("id", str(uuid.uuid4()))
@@ -39,6 +41,18 @@ async def process_mcp_call(
         risk_level=classification["risk_level"],
         reason=reason,
         args=tool_args,
+        submitted_by=submitted_by,
+    )
+    db.insert_audit_log(
+        "action.created",
+        action_id=action_id,
+        actor=submitted_by,
+        ip_address=ip_address,
+        detail={
+            "tool_name": tool_name,
+            "risk_level": classification["risk_level"],
+            "category": classification["category"],
+        },
     )
     broadcast("action_added", {"action_id": action_id, "tool_name": tool_name})
     await notify_action_added(
@@ -61,6 +75,11 @@ async def process_mcp_call(
     except asyncio.TimeoutError:
         EXECUTION_WAITERS.pop(action_id, None)
         db.update_action_status(action_id, "REJECTED", "Hold timed out after 300 seconds.")
+        db.insert_audit_log(
+            "action.timeout",
+            action_id=action_id,
+            detail={"tool_name": tool_name},
+        )
         return {
             "jsonrpc": "2.0",
             "id": rpc_id,
