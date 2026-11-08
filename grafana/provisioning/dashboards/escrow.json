@@ -1,0 +1,290 @@
+{
+  "uid": "agent-escrow-overview",
+  "title": "Agent Escrow",
+  "description": "Pending queue, approval rates, review latency, and audit events.",
+  "schemaVersion": 38,
+  "version": 1,
+  "refresh": "15s",
+  "time": { "from": "now-3h", "to": "now" },
+  "timepicker": {},
+  "tags": ["agent-escrow"],
+  "panels": [
+
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Pending Now",
+      "description": "Tool calls waiting for human review.",
+      "gridPos": { "x": 0, "y": 0, "w": 6, "h": 4 },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "orientation": "auto",
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 3 },
+              { "color": "red", "value": 10 }
+            ]
+          },
+          "mappings": [],
+          "unit": "none",
+          "color": { "mode": "thresholds" }
+        }
+      },
+      "datasource": { "uid": "escrow-prometheus" },
+      "targets": [
+        {
+          "expr": "escrow_pending_count",
+          "legendFormat": "pending",
+          "instant": true
+        }
+      ]
+    },
+
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Approved",
+      "description": "Total actions approved since server start.",
+      "gridPos": { "x": 6, "y": 0, "w": 6, "h": 4 },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "colorMode": "background",
+        "graphMode": "none"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "fixedColor": "green", "mode": "fixed" },
+          "unit": "none",
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [] }
+        }
+      },
+      "datasource": { "uid": "escrow-prometheus" },
+      "targets": [
+        {
+          "expr": "sum(escrow_actions_total{status=\"APPROVED\"}) or vector(0)",
+          "legendFormat": "approved",
+          "instant": true
+        }
+      ]
+    },
+
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Rejected",
+      "description": "Total actions rejected since server start.",
+      "gridPos": { "x": 12, "y": 0, "w": 6, "h": 4 },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "colorMode": "background",
+        "graphMode": "none"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "fixedColor": "red", "mode": "fixed" },
+          "unit": "none",
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [] }
+        }
+      },
+      "datasource": { "uid": "escrow-prometheus" },
+      "targets": [
+        {
+          "expr": "sum(escrow_actions_total{status=\"REJECTED\"}) or vector(0)",
+          "legendFormat": "rejected",
+          "instant": true
+        }
+      ]
+    },
+
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Avg Review Time",
+      "description": "Mean seconds between action created and resolved.",
+      "gridPos": { "x": 18, "y": 0, "w": 6, "h": 4 },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "colorMode": "background",
+        "graphMode": "none"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "decimals": 1,
+          "mappings": [{ "type": "special", "options": { "match": "nan", "result": { "text": "–" } } }],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 60 },
+              { "color": "red", "value": 300 }
+            ]
+          },
+          "color": { "mode": "thresholds" }
+        }
+      },
+      "datasource": { "uid": "escrow-prometheus" },
+      "targets": [
+        {
+          "expr": "escrow_approval_latency_seconds_sum / escrow_approval_latency_seconds_count",
+          "legendFormat": "avg latency",
+          "instant": true
+        }
+      ]
+    },
+
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Queue Depth",
+      "description": "Number of PENDING actions over time.",
+      "gridPos": { "x": 0, "y": 4, "w": 24, "h": 7 },
+      "options": {
+        "tooltip": { "mode": "single" },
+        "legend": { "displayMode": "list", "placement": "bottom" }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 15,
+            "spanNulls": true
+          },
+          "color": { "fixedColor": "blue", "mode": "fixed" },
+          "thresholds": { "mode": "absolute", "steps": [] }
+        }
+      },
+      "datasource": { "uid": "escrow-prometheus" },
+      "targets": [
+        {
+          "expr": "escrow_pending_count",
+          "legendFormat": "pending"
+        }
+      ]
+    },
+
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Approvals vs Rejections",
+      "description": "Cumulative approved and rejected actions over time.",
+      "gridPos": { "x": 0, "y": 11, "w": 14, "h": 8 },
+      "options": {
+        "tooltip": { "mode": "multi" },
+        "legend": { "displayMode": "list", "placement": "bottom" }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "custom": { "lineWidth": 2, "fillOpacity": 10, "spanNulls": true },
+          "thresholds": { "mode": "absolute", "steps": [] }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "approved" },
+            "properties": [{ "id": "color", "value": { "fixedColor": "green", "mode": "fixed" } }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "rejected" },
+            "properties": [{ "id": "color", "value": { "fixedColor": "red", "mode": "fixed" } }]
+          }
+        ]
+      },
+      "datasource": { "uid": "escrow-prometheus" },
+      "targets": [
+        {
+          "expr": "sum(escrow_actions_total{status=\"APPROVED\"}) or vector(0)",
+          "legendFormat": "approved"
+        },
+        {
+          "expr": "sum(escrow_actions_total{status=\"REJECTED\"}) or vector(0)",
+          "legendFormat": "rejected"
+        }
+      ]
+    },
+
+    {
+      "id": 7,
+      "type": "piechart",
+      "title": "Actions by Risk Level",
+      "description": "Distribution of all processed actions across risk tiers.",
+      "gridPos": { "x": 14, "y": 11, "w": 10, "h": 8 },
+      "options": {
+        "pieType": "donut",
+        "legend": { "displayMode": "table", "placement": "right", "values": ["value", "percent"] },
+        "tooltip": { "mode": "single" }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [] }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "CRITICAL" },
+            "properties": [{ "id": "color", "value": { "fixedColor": "dark-red", "mode": "fixed" } }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "HIGH" },
+            "properties": [{ "id": "color", "value": { "fixedColor": "orange", "mode": "fixed" } }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "MEDIUM" },
+            "properties": [{ "id": "color", "value": { "fixedColor": "yellow", "mode": "fixed" } }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "LOW" },
+            "properties": [{ "id": "color", "value": { "fixedColor": "green", "mode": "fixed" } }]
+          }
+        ]
+      },
+      "datasource": { "uid": "escrow-prometheus" },
+      "targets": [
+        {
+          "expr": "sum by(risk_level) (escrow_actions_total)",
+          "legendFormat": "{{risk_level}}",
+          "instant": true
+        }
+      ]
+    },
+
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Audit Events",
+      "description": "Cumulative audit log entries by event type.",
+      "gridPos": { "x": 0, "y": 19, "w": 24, "h": 7 },
+      "options": {
+        "tooltip": { "mode": "multi" },
+        "legend": { "displayMode": "list", "placement": "bottom" }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "custom": { "lineWidth": 1, "fillOpacity": 5, "spanNulls": true },
+          "thresholds": { "mode": "absolute", "steps": [] }
+        }
+      },
+      "datasource": { "uid": "escrow-prometheus" },
+      "targets": [
+        {
+          "expr": "escrow_audit_events_total",
+          "legendFormat": "{{event_type}}"
+        }
+      ]
+    }
+
+  ]
+}
