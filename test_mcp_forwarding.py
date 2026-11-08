@@ -380,3 +380,140 @@ async def test_auth_health_always_public(client, monkeypatch):
     monkeypatch.setenv("ESCROW_API_KEY", "secret123")
     r = await client.get("/health")
     assert r.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# 23-28. Push notifications
+# ---------------------------------------------------------------------------
+
+import proxy.notifications as notif_module
+
+
+async def test_no_notification_when_no_env_vars(monkeypatch):
+    """When no webhook env vars are set, no HTTP calls are made."""
+    for var in ("SLACK_WEBHOOK_URL", "NOTIFICATION_WEBHOOK_URL", "PAGERDUTY_ROUTING_KEY"):
+        monkeypatch.delenv(var, raising=False)
+
+    called: list = []
+    notif_module._test_transport = httpx.MockTransport(
+        handler=lambda req: called.append(req) or httpx.Response(200)
+    )
+    await notif_module.notify_action_added(
+        action_id="act_test", tool_name="delete_x",
+        risk_level="CRITICAL", category="DATABASE", reason="test",
+    )
+    assert called == [], "unexpected HTTP call when no webhooks configured"
+    notif_module._test_transport = None
+
+
+async def test_slack_webhook_called(monkeypatch):
+    monkeypatch.setenv("SLACK_WEBHOOK_URL", "http://fake-slack/hook")
+    monkeypatch.delenv("NOTIFICATION_WEBHOOK_URL", raising=False)
+    monkeypatch.delenv("PAGERDUTY_ROUTING_KEY", raising=False)
+
+    captured: list = []
+    notif_module._test_transport = httpx.MockTransport(
+        handler=lambda req: captured.append(req) or httpx.Response(200)
+    )
+    await notif_module.notify_action_added(
+        action_id="act_slack", tool_name="drop_table",
+        risk_level="CRITICAL", category="DATABASE", reason="cleanup",
+    )
+    notif_module._test_transport = None
+
+    assert len(captured) == 1
+    assert "fake-slack" in str(captured[0].url)
+    import json
+    body = json.loads(captured[0].content)
+    assert "drop_table" in body["text"]
+    assert any("drop_table" in str(b) for b in body["blocks"])
+
+
+async def test_generic_webhook_called(monkeypatch):
+    monkeypatch.setenv("NOTIFICATION_WEBHOOK_URL", "http://fake-webhook/notify")
+    monkeypatch.delenv("SLACK_WEBHOOK_URL", raising=False)
+    monkeypatch.delenv("PAGERDUTY_ROUTING_KEY", raising=False)
+
+    captured: list = []
+    notif_module._test_transport = httpx.MockTransport(
+        handler=lambda req: captured.append(req) or httpx.Response(200)
+    )
+    await notif_module.notify_action_added(
+        action_id="act_wh", tool_name="send_email",
+        risk_level="MEDIUM", category="COMMUNICATION", reason="notify team",
+    )
+    notif_module._test_transport = None
+
+    assert len(captured) == 1
+    import json
+    body = json.loads(captured[0].content)
+    assert body["tool_name"] == "send_email"
+    assert body["risk_level"] == "MEDIUM"
+    assert body["action_id"] == "act_wh"
+
+
+async def test_pagerduty_called_with_correct_severity(monkeypatch):
+    monkeypatch.setenv("PAGERDUTY_ROUTING_KEY", "pd-routing-key-123")
+    monkeypatch.delenv("SLACK_WEBHOOK_URL", raising=False)
+    monkeypatch.delenv("NOTIFICATION_WEBHOOK_URL", raising=False)
+
+    captured: list = []
+    notif_module._test_transport = httpx.MockTransport(
+        handler=lambda req: captured.append(req) or httpx.Response(202)
+    )
+    await notif_module.notify_action_added(
+        action_id="act_pd", tool_name="transfer_funds",
+        risk_level="HIGH", category="FINANCIAL", reason="wire transfer",
+    )
+    notif_module._test_transport = None
+
+    assert len(captured) == 1
+    assert "pagerduty.com" in str(captured[0].url)
+    import json
+    body = json.loads(captured[0].content)
+    assert body["routing_key"] == "pd-routing-key-123"
+    assert body["payload"]["severity"] == "error"   # HIGH → error
+    assert body["dedup_key"] == "act_pd"
+
+
+async def test_notification_error_does_not_break_escrow(client, monkeypatch):
+    """A webhook that returns 500 must not prevent the action from being escrowed."""
+    monkeypatch.setenv("SLACK_WEBHOOK_URL", "http://broken-webhook/hook")
+    notif_module._test_transport = httpx.MockTransport(
+        handler=lambda req: httpx.Response(500)
+    )
+
+    async def _mcp():
+        return await client.post("/mcp", json={
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": "delete_record", "arguments": {}},
+        })
+
+    task = asyncio.create_task(_mcp())
+    await asyncio.sleep(0.1)
+    pending = (await client.get("/api/pending")).json()
+    assert len(pending) == 1, "action must be in escrow even when webhook fails"
+
+    await client.post("/api/resolve", json={"action_id": pending[0]["id"], "decision": "APPROVED"})
+    await task
+    notif_module._test_transport = None
+
+
+async def test_all_three_channels_called(monkeypatch):
+    monkeypatch.setenv("SLACK_WEBHOOK_URL", "http://fake-slack/hook")
+    monkeypatch.setenv("NOTIFICATION_WEBHOOK_URL", "http://fake-webhook/notify")
+    monkeypatch.setenv("PAGERDUTY_ROUTING_KEY", "pd-key")
+
+    urls: list = []
+    notif_module._test_transport = httpx.MockTransport(
+        handler=lambda req: urls.append(str(req.url)) or httpx.Response(200)
+    )
+    await notif_module.notify_action_added(
+        action_id="act_all", tool_name="drop_table",
+        risk_level="CRITICAL", category="DATABASE", reason="all channels",
+    )
+    notif_module._test_transport = None
+
+    assert any("slack" in u for u in urls)
+    assert any("fake-webhook" in u for u in urls)
+    assert any("pagerduty" in u for u in urls)

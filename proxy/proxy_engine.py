@@ -8,6 +8,7 @@ from . import db
 from .config import classify_tool_call
 from .events import broadcast
 from .forwarder import forward as _forward
+from .notifications import notify_action_added
 
 EXECUTION_WAITERS: Dict[str, Dict[str, Any]] = {}
 
@@ -40,6 +41,13 @@ async def process_mcp_call(
         args=tool_args,
     )
     broadcast("action_added", {"action_id": action_id, "tool_name": tool_name})
+    await notify_action_added(
+        action_id=action_id,
+        tool_name=tool_name,
+        risk_level=classification["risk_level"],
+        category=classification["category"],
+        reason=reason,
+    )
 
     event = asyncio.Event()
     EXECUTION_WAITERS[action_id] = {
