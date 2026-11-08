@@ -743,3 +743,105 @@ async def test_audit_endpoint_filters_by_event_type(client):
     only_created = (await client.get("/api/audit?event_type=action.created")).json()
     assert all(e["event_type"] == "action.created" for e in only_created)
     assert any(e["action_id"] == action_id for e in only_created)
+
+
+# ---------------------------------------------------------------------------
+# Metrics endpoint tests
+# ---------------------------------------------------------------------------
+
+async def test_metrics_empty_db(client):
+    resp = await client.get("/metrics")
+    assert resp.status_code == 200
+    assert "text/plain" in resp.headers["content-type"]
+    body = resp.text
+    assert "escrow_pending_count 0" in body
+    assert "escrow_approval_latency_seconds_count 0" in body
+
+
+async def test_metrics_pending_count(client):
+    t = asyncio.create_task(client.post("/mcp", json={
+        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": {"name": "delete_record", "arguments": {}},
+    }))
+    await asyncio.sleep(0.05)
+
+    body = (await client.get("/metrics")).text
+    assert "escrow_pending_count 1" in body
+
+    pending = (await client.get("/api/pending")).json()
+    await client.post("/api/resolve", json={"action_id": pending[0]["id"], "decision": "APPROVED"})
+    await t
+
+    body = (await client.get("/metrics")).text
+    assert "escrow_pending_count 0" in body
+
+
+async def test_metrics_actions_total_labels(client):
+    for _ in range(2):
+        t = asyncio.create_task(client.post("/mcp", json={
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": "delete_record", "arguments": {}},
+        }))
+        await asyncio.sleep(0.05)
+        pending = (await client.get("/api/pending")).json()
+        await client.post("/api/resolve", json={"action_id": pending[0]["id"], "decision": "APPROVED"})
+        await t
+
+    t = asyncio.create_task(client.post("/mcp", json={
+        "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+        "params": {"name": "delete_record", "arguments": {}},
+    }))
+    await asyncio.sleep(0.05)
+    pending = (await client.get("/api/pending")).json()
+    await client.post("/api/resolve", json={
+        "action_id": pending[0]["id"], "decision": "REJECTED", "rejection_reason": "no"
+    })
+    await t
+
+    body = (await client.get("/metrics")).text
+    assert 'status="APPROVED"' in body
+    assert 'status="REJECTED"' in body
+    assert 'risk_level="CRITICAL"' in body
+
+
+async def test_metrics_latency_nonzero_after_resolution(client):
+    t = asyncio.create_task(client.post("/mcp", json={
+        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": {"name": "delete_record", "arguments": {}},
+    }))
+    await asyncio.sleep(0.05)
+    pending = (await client.get("/api/pending")).json()
+    await client.post("/api/resolve", json={"action_id": pending[0]["id"], "decision": "APPROVED"})
+    await t
+
+    body = (await client.get("/metrics")).text
+    assert "escrow_approval_latency_seconds_count 1" in body
+    # sum should be a positive float
+    for line in body.splitlines():
+        if line.startswith("escrow_approval_latency_seconds_sum "):
+            val = float(line.split()[-1])
+            assert val >= 0
+
+
+async def test_metrics_audit_events_appear(client):
+    t = asyncio.create_task(client.post("/mcp", json={
+        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": {"name": "delete_record", "arguments": {}},
+    }))
+    await asyncio.sleep(0.05)
+    pending = (await client.get("/api/pending")).json()
+    await client.post("/api/resolve", json={"action_id": pending[0]["id"], "decision": "APPROVED"})
+    await t
+
+    body = (await client.get("/metrics")).text
+    assert 'event_type="action.created"' in body
+    assert 'event_type="action.approved"' in body
+
+
+async def test_metrics_prometheus_format_structure(client):
+    body = (await client.get("/metrics")).text
+    for line in body.splitlines():
+        if line and not line.startswith("#"):
+            parts = line.rsplit(" ", 1)
+            assert len(parts) == 2, f"bad metric line: {line!r}"
+            float(parts[1])  # value must be numeric

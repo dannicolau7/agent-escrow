@@ -3,10 +3,11 @@ from __future__ import annotations
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import PlainTextResponse, StreamingResponse
 from pydantic import BaseModel
 
 from . import db
+from . import metrics as _metrics
 from .auth import require_approver, require_viewer
 from .db import get_audit_log, get_pending_actions, get_resolved_history
 from .events import broadcast, subscribe
@@ -82,3 +83,12 @@ def list_audit(
 ):
     db.ensure_db()
     return get_audit_log(limit=limit, action_id=action_id, event_type=event_type)
+
+
+@router.get("/metrics", dependencies=[Depends(require_viewer)])
+def prometheus_metrics():
+    db.ensure_db()
+    return PlainTextResponse(
+        _metrics.collect(),
+        media_type="text/plain; version=0.0.4; charset=utf-8",
+    )
