@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+proxy/escrow.db
+
+# Node
+web/node_modules/
+web/.next/
+web/out/
+
+# Tests
+test_*.py
+pytest.ini
+
+# Git
+.git/
+.github/
+
+# Docs
+*.md
+specs/

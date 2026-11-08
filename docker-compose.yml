@@ -1,0 +1,23 @@
+services:
+  proxy:
+    build: .
+    ports:
+      - "4000:4000"
+    volumes:
+      # Persist the SQLite database outside the container
+      - escrow-data:/data
+    environment:
+      # Set to restrict dashboard and /mcp access to key holders.
+      # Leave unset for open dev mode.
+      - ESCROW_API_KEY=${ESCROW_API_KEY:-}
+      # Set to forward approved tool calls to a real MCP server.
+      - MCP_UPSTREAM_URL=${MCP_UPSTREAM_URL:-}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:4000/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  escrow-data:

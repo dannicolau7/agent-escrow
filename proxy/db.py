@@ -7,7 +7,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-DB_PATH: Path = Path(__file__).parent / "escrow.db"
+import os as _os
+DB_PATH: Path = Path(_os.environ.get("DB_PATH") or Path(__file__).parent / "escrow.db")
 
 _lock = threading.Lock()
 _conn: Optional[sqlite3.Connection] = None
