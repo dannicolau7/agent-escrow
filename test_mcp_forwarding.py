@@ -15,10 +15,10 @@ Covers:
  - Classifier bypass: get_and_delete_user must be HELD, not auto-approved
  - transfer_funds → HIGH/FINANCIAL, drop_table → CRITICAL/DATABASE
 """
+
 from __future__ import annotations
 
 import asyncio
-import os
 
 import httpx
 import pytest
@@ -26,6 +26,7 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
 import proxy.forwarder as forwarder_module
+import proxy.notifications as notif_module
 from proxy import db
 from proxy.config import classify_tool_call
 from proxy.main import app
@@ -37,6 +38,7 @@ pytestmark = pytest.mark.asyncio
 # ---------------------------------------------------------------------------
 # Shared fixture
 # ---------------------------------------------------------------------------
+
 
 @pytest_asyncio.fixture
 async def client(tmp_path, monkeypatch):
@@ -69,6 +71,7 @@ def _tools_call(tool_name: str, args: dict | None = None, rpc_id: int = 1) -> di
 # 1. Mock mode: no MCP_UPSTREAM_URL → returns a structured mock result
 # ---------------------------------------------------------------------------
 
+
 async def test_mock_mode_auto_approved(client):
     r = await client.post("/mcp", json=_tools_call("get_user"))
     assert r.status_code == 200
@@ -82,15 +85,14 @@ async def test_mock_mode_auto_approved(client):
 # 2. Real upstream via _test_transport
 # ---------------------------------------------------------------------------
 
+
 async def test_real_upstream_forwarding(client, monkeypatch):
     upstream_response = {
         "jsonrpc": "2.0",
         "id": 1,
         "result": {"content": [{"type": "text", "text": "real upstream result"}]},
     }
-    mock_transport = httpx.MockTransport(
-        handler=lambda req: httpx.Response(200, json=upstream_response)
-    )
+    mock_transport = httpx.MockTransport(handler=lambda req: httpx.Response(200, json=upstream_response))
     monkeypatch.setenv("MCP_UPSTREAM_URL", "http://fake-upstream/mcp")
     forwarder_module._test_transport = mock_transport
 
@@ -103,6 +105,7 @@ async def test_real_upstream_forwarding(client, monkeypatch):
 # 3. Headers: the agent's escrow key is NEVER sent upstream; MCP session
 #    headers are; upstream auth comes from MCP_UPSTREAM_TOKEN
 # ---------------------------------------------------------------------------
+
 
 async def test_escrow_key_not_forwarded_upstream(client, monkeypatch):
     captured: list = []
@@ -131,6 +134,7 @@ async def test_escrow_key_not_forwarded_upstream(client, monkeypatch):
 # 4. Upstream timeout → -32001
 # ---------------------------------------------------------------------------
 
+
 async def test_upstream_timeout(monkeypatch):
     async def raise_timeout(*_a, **_kw):
         raise httpx.TimeoutException("timed out")
@@ -143,6 +147,7 @@ async def test_upstream_timeout(monkeypatch):
 
     forwarder_module._test_transport = TimeoutTransport()
     from proxy.forwarder import forward
+
     result = await forward({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {}})
     assert result["error"]["code"] == -32001
     forwarder_module._test_transport = None
@@ -152,12 +157,12 @@ async def test_upstream_timeout(monkeypatch):
 # 5. Upstream HTTP error → -32002
 # ---------------------------------------------------------------------------
 
+
 async def test_upstream_http_error(monkeypatch):
     monkeypatch.setenv("MCP_UPSTREAM_URL", "http://fake-upstream/mcp")
-    forwarder_module._test_transport = httpx.MockTransport(
-        handler=lambda req: httpx.Response(503)
-    )
+    forwarder_module._test_transport = httpx.MockTransport(handler=lambda req: httpx.Response(503))
     from proxy.forwarder import forward
+
     result = await forward({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {}})
     assert result["error"]["code"] == -32002
     assert "503" in result["error"]["message"]
@@ -168,6 +173,7 @@ async def test_upstream_http_error(monkeypatch):
 # 6. Network unreachable → -32003
 # ---------------------------------------------------------------------------
 
+
 async def test_upstream_network_error(monkeypatch):
     monkeypatch.setenv("MCP_UPSTREAM_URL", "http://fake-upstream/mcp")
 
@@ -177,6 +183,7 @@ async def test_upstream_network_error(monkeypatch):
 
     forwarder_module._test_transport = NetworkErrorTransport()
     from proxy.forwarder import forward
+
     result = await forward({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {}})
     assert result["error"]["code"] == -32003
     forwarder_module._test_transport = None
@@ -186,13 +193,13 @@ async def test_upstream_network_error(monkeypatch):
 # 7. MCP protocol methods are forwarded without escrow
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.parametrize("method", ["initialize", "tools/list", "ping", "resources/list"])
 async def test_protocol_methods_not_escrowed(client, method):
     payload = {"jsonrpc": "2.0", "id": 1, "method": method, "params": {}}
     r = await client.post("/mcp", json=payload)
     # In mock mode (no upstream), non-tools/call methods return a mock result
     assert r.status_code == 200
-    body = r.json()
     # Should never be held — pending queue must stay empty
     pending = (await client.get("/api/pending")).json()
     assert pending == [], f"{method} ended up in escrow"
@@ -202,9 +209,13 @@ async def test_protocol_methods_not_escrowed(client, method):
 # 8. Batch request (array) → -32600, not 500
 # ---------------------------------------------------------------------------
 
+
 async def test_batch_request_returns_32600(client):
-    r = await client.post("/mcp", content=b'[{"jsonrpc":"2.0","id":1,"method":"tools/call"}]',
-                          headers={"content-type": "application/json"})
+    r = await client.post(
+        "/mcp",
+        content=b'[{"jsonrpc":"2.0","id":1,"method":"tools/call"}]',
+        headers={"content-type": "application/json"},
+    )
     assert r.status_code == 200
     body = r.json()
     assert body["error"]["code"] == -32600
@@ -213,6 +224,7 @@ async def test_batch_request_returns_32600(client):
 # ---------------------------------------------------------------------------
 # 9. params: null → -32602, not 500
 # ---------------------------------------------------------------------------
+
 
 async def test_null_params_returns_32602(client):
     r = await client.post("/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": None})
@@ -225,11 +237,17 @@ async def test_null_params_returns_32602(client):
 # 10. arguments not an object → -32602, not 500
 # ---------------------------------------------------------------------------
 
+
 async def test_non_object_arguments_returns_32602(client):
-    r = await client.post("/mcp", json={
-        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
-        "params": {"name": "delete_record", "arguments": "not_an_object"},
-    })
+    r = await client.post(
+        "/mcp",
+        json={
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": "delete_record", "arguments": "not_an_object"},
+        },
+    )
     assert r.status_code == 200
     body = r.json()
     assert body["error"]["code"] == -32602
@@ -238,6 +256,7 @@ async def test_non_object_arguments_returns_32602(client):
 # ---------------------------------------------------------------------------
 # 11. Classifier bypass: get_and_delete_user must be HELD
 # ---------------------------------------------------------------------------
+
 
 def test_classifier_no_bypass_via_safe_prefix():
     result = classify_tool_call("get_and_delete_user")
@@ -248,6 +267,7 @@ def test_classifier_no_bypass_via_safe_prefix():
 # ---------------------------------------------------------------------------
 # 12. transfer_funds → HIGH/FINANCIAL
 # ---------------------------------------------------------------------------
+
 
 def test_transfer_funds_is_high_financial():
     result = classify_tool_call("transfer_funds")
@@ -260,6 +280,7 @@ def test_transfer_funds_is_high_financial():
 # 13. drop_table → CRITICAL/DATABASE
 # ---------------------------------------------------------------------------
 
+
 def test_drop_table_is_critical():
     result = classify_tool_call("drop_table")
     assert result["action"] == "HOLD"
@@ -270,8 +291,10 @@ def test_drop_table_is_critical():
 # 14. SSE broadcast: events.broadcast() delivers to all subscribers
 # ---------------------------------------------------------------------------
 
+
 async def test_sse_broadcast_reaches_subscriber():
     import proxy.events as ev
+
     # Reset subscribers for isolation
     ev._subscribers.clear()
 
@@ -281,6 +304,7 @@ async def test_sse_broadcast_reaches_subscriber():
         async for chunk in ev.subscribe():
             if chunk.startswith("data:"):
                 import json
+
                 received.append(json.loads(chunk.split("data:", 1)[1].strip()))
                 return
 
@@ -299,8 +323,10 @@ async def test_sse_broadcast_reaches_subscriber():
 # 15. SSE broadcast: action_resolved event after /api/resolve
 # ---------------------------------------------------------------------------
 
+
 async def test_sse_action_resolved_event(client):
     import proxy.events as ev
+
     ev._subscribers.clear()
 
     received: list = []
@@ -309,6 +335,7 @@ async def test_sse_action_resolved_event(client):
         async for chunk in ev.subscribe():
             if chunk.startswith("data:"):
                 import json
+
                 received.append(json.loads(chunk.split("data:", 1)[1].strip()))
                 if any(e.get("type") == "action_resolved" for e in received):
                     return
@@ -316,10 +343,17 @@ async def test_sse_action_resolved_event(client):
     async def _work():
         await asyncio.sleep(0)
         # Create a pending action
-        t = asyncio.create_task(client.post("/mcp", json={
-            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
-            "params": {"name": "delete_record", "arguments": {}},
-        }))
+        t = asyncio.create_task(
+            client.post(
+                "/mcp",
+                json={
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "tools/call",
+                    "params": {"name": "delete_record", "arguments": {}},
+                },
+            )
+        )
         await asyncio.sleep(0.05)
         pending = (await client.get("/api/pending")).json()
         await client.post("/api/resolve", json={"action_id": pending[0]["id"], "decision": "APPROVED"})
@@ -339,6 +373,7 @@ async def test_sse_action_resolved_event(client):
 # ---------------------------------------------------------------------------
 # 16-18. Auth middleware
 # ---------------------------------------------------------------------------
+
 
 async def test_auth_disabled_in_dev_mode(client, monkeypatch):
     monkeypatch.delenv("ESCROW_API_KEY", raising=False)
@@ -372,8 +407,10 @@ async def test_auth_correct_x_api_key(client, monkeypatch):
 
 async def test_auth_mcp_endpoint_protected(client, monkeypatch):
     monkeypatch.setenv("ESCROW_API_KEY", "secret123")
-    r = await client.post("/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "tools/call",
-                                         "params": {"name": "get_user", "arguments": {}}})
+    r = await client.post(
+        "/mcp",
+        json={"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "get_user", "arguments": {}}},
+    )
     assert r.status_code == 401
 
 
@@ -387,8 +424,6 @@ async def test_auth_health_always_public(client, monkeypatch):
 # 23-28. Push notifications
 # ---------------------------------------------------------------------------
 
-import proxy.notifications as notif_module
-
 
 async def test_no_notification_when_no_env_vars(monkeypatch):
     """When no webhook env vars are set, no HTTP calls are made."""
@@ -396,12 +431,13 @@ async def test_no_notification_when_no_env_vars(monkeypatch):
         monkeypatch.delenv(var, raising=False)
 
     called: list = []
-    notif_module._test_transport = httpx.MockTransport(
-        handler=lambda req: called.append(req) or httpx.Response(200)
-    )
+    notif_module._test_transport = httpx.MockTransport(handler=lambda req: called.append(req) or httpx.Response(200))
     await notif_module.notify_action_added(
-        action_id="act_test", tool_name="delete_x",
-        risk_level="CRITICAL", category="DATABASE", reason="test",
+        action_id="act_test",
+        tool_name="delete_x",
+        risk_level="CRITICAL",
+        category="DATABASE",
+        reason="test",
     )
     assert called == [], "unexpected HTTP call when no webhooks configured"
     notif_module._test_transport = None
@@ -413,18 +449,20 @@ async def test_slack_webhook_called(monkeypatch):
     monkeypatch.delenv("PAGERDUTY_ROUTING_KEY", raising=False)
 
     captured: list = []
-    notif_module._test_transport = httpx.MockTransport(
-        handler=lambda req: captured.append(req) or httpx.Response(200)
-    )
+    notif_module._test_transport = httpx.MockTransport(handler=lambda req: captured.append(req) or httpx.Response(200))
     await notif_module.notify_action_added(
-        action_id="act_slack", tool_name="drop_table",
-        risk_level="CRITICAL", category="DATABASE", reason="cleanup",
+        action_id="act_slack",
+        tool_name="drop_table",
+        risk_level="CRITICAL",
+        category="DATABASE",
+        reason="cleanup",
     )
     notif_module._test_transport = None
 
     assert len(captured) == 1
     assert "fake-slack" in str(captured[0].url)
     import json
+
     body = json.loads(captured[0].content)
     assert "drop_table" in body["text"]
     assert any("drop_table" in str(b) for b in body["blocks"])
@@ -436,17 +474,19 @@ async def test_generic_webhook_called(monkeypatch):
     monkeypatch.delenv("PAGERDUTY_ROUTING_KEY", raising=False)
 
     captured: list = []
-    notif_module._test_transport = httpx.MockTransport(
-        handler=lambda req: captured.append(req) or httpx.Response(200)
-    )
+    notif_module._test_transport = httpx.MockTransport(handler=lambda req: captured.append(req) or httpx.Response(200))
     await notif_module.notify_action_added(
-        action_id="act_wh", tool_name="send_email",
-        risk_level="MEDIUM", category="COMMUNICATION", reason="notify team",
+        action_id="act_wh",
+        tool_name="send_email",
+        risk_level="MEDIUM",
+        category="COMMUNICATION",
+        reason="notify team",
     )
     notif_module._test_transport = None
 
     assert len(captured) == 1
     import json
+
     body = json.loads(captured[0].content)
     assert body["tool_name"] == "send_email"
     assert body["risk_level"] == "MEDIUM"
@@ -459,36 +499,41 @@ async def test_pagerduty_called_with_correct_severity(monkeypatch):
     monkeypatch.delenv("NOTIFICATION_WEBHOOK_URL", raising=False)
 
     captured: list = []
-    notif_module._test_transport = httpx.MockTransport(
-        handler=lambda req: captured.append(req) or httpx.Response(202)
-    )
+    notif_module._test_transport = httpx.MockTransport(handler=lambda req: captured.append(req) or httpx.Response(202))
     await notif_module.notify_action_added(
-        action_id="act_pd", tool_name="transfer_funds",
-        risk_level="HIGH", category="FINANCIAL", reason="wire transfer",
+        action_id="act_pd",
+        tool_name="transfer_funds",
+        risk_level="HIGH",
+        category="FINANCIAL",
+        reason="wire transfer",
     )
     notif_module._test_transport = None
 
     assert len(captured) == 1
     assert "pagerduty.com" in str(captured[0].url)
     import json
+
     body = json.loads(captured[0].content)
     assert body["routing_key"] == "pd-routing-key-123"
-    assert body["payload"]["severity"] == "error"   # HIGH → error
+    assert body["payload"]["severity"] == "error"  # HIGH → error
     assert body["dedup_key"] == "act_pd"
 
 
 async def test_notification_error_does_not_break_escrow(client, monkeypatch):
     """A webhook that returns 500 must not prevent the action from being escrowed."""
     monkeypatch.setenv("SLACK_WEBHOOK_URL", "http://broken-webhook/hook")
-    notif_module._test_transport = httpx.MockTransport(
-        handler=lambda req: httpx.Response(500)
-    )
+    notif_module._test_transport = httpx.MockTransport(handler=lambda req: httpx.Response(500))
 
     async def _mcp():
-        return await client.post("/mcp", json={
-            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
-            "params": {"name": "delete_record", "arguments": {}},
-        })
+        return await client.post(
+            "/mcp",
+            json={
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {"name": "delete_record", "arguments": {}},
+            },
+        )
 
     task = asyncio.create_task(_mcp())
     await asyncio.sleep(0.1)
@@ -510,8 +555,11 @@ async def test_all_three_channels_called(monkeypatch):
         handler=lambda req: urls.append(str(req.url)) or httpx.Response(200)
     )
     await notif_module.notify_action_added(
-        action_id="act_all", tool_name="drop_table",
-        risk_level="CRITICAL", category="DATABASE", reason="all channels",
+        action_id="act_all",
+        tool_name="drop_table",
+        risk_level="CRITICAL",
+        category="DATABASE",
+        reason="all channels",
     )
     notif_module._test_transport = None
 
@@ -524,27 +572,40 @@ async def test_all_three_channels_called(monkeypatch):
 # RBAC tests
 # ---------------------------------------------------------------------------
 
+
 def _escrow_keys(*triples: tuple) -> str:
     """Build ESCROW_KEYS value from (label, role, key) triples."""
-    return "|".join(f"{l}:{r}:{k}" for l, r, k in triples)
+    return "|".join(f"{label}:{role}:{key}" for label, role, key in triples)
 
 
 async def test_rbac_approver_can_resolve(client, monkeypatch):
-    monkeypatch.setenv("ESCROW_KEYS", _escrow_keys(
-        ("agent1", "agent", "sk_agent"),
-        ("reviewer", "approver", "sk_approver"),
-    ))
+    monkeypatch.setenv(
+        "ESCROW_KEYS",
+        _escrow_keys(
+            ("agent1", "agent", "sk_agent"),
+            ("reviewer", "approver", "sk_approver"),
+        ),
+    )
     # Agent submits a mutating call
-    t = asyncio.create_task(client.post("/mcp", json={
-        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
-        "params": {"name": "delete_record", "arguments": {}},
-    }, headers={"X-Api-Key": "sk_agent"}))
+    t = asyncio.create_task(
+        client.post(
+            "/mcp",
+            json={
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {"name": "delete_record", "arguments": {}},
+            },
+            headers={"X-Api-Key": "sk_agent"},
+        )
+    )
     await asyncio.sleep(0.05)
 
     pending = (await client.get("/api/pending", headers={"X-Api-Key": "sk_approver"})).json()
     assert len(pending) == 1
 
-    r = await client.post("/api/resolve",
+    r = await client.post(
+        "/api/resolve",
         json={"action_id": pending[0]["id"], "decision": "APPROVED"},
         headers={"X-Api-Key": "sk_approver"},
     )
@@ -555,10 +616,16 @@ async def test_rbac_approver_can_resolve(client, monkeypatch):
 
 async def test_rbac_approver_cannot_call_mcp(client, monkeypatch):
     monkeypatch.setenv("ESCROW_KEYS", _escrow_keys(("reviewer", "approver", "sk_approver")))
-    r = await client.post("/mcp", json={
-        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
-        "params": {"name": "get_user", "arguments": {}},
-    }, headers={"X-Api-Key": "sk_approver"})
+    r = await client.post(
+        "/mcp",
+        json={
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": "get_user", "arguments": {}},
+        },
+        headers={"X-Api-Key": "sk_approver"},
+    )
     assert r.status_code == 403
 
 
@@ -570,7 +637,8 @@ async def test_rbac_viewer_can_read_pending(client, monkeypatch):
 
 async def test_rbac_viewer_cannot_resolve(client, monkeypatch):
     monkeypatch.setenv("ESCROW_KEYS", _escrow_keys(("watcher", "viewer", "sk_viewer")))
-    r = await client.post("/api/resolve",
+    r = await client.post(
+        "/api/resolve",
         json={"action_id": "ghost", "decision": "APPROVED"},
         headers={"X-Api-Key": "sk_viewer"},
     )
@@ -585,29 +653,47 @@ async def test_rbac_agent_cannot_read_pending(client, monkeypatch):
 
 async def test_rbac_agent_can_call_mcp(client, monkeypatch):
     monkeypatch.setenv("ESCROW_KEYS", _escrow_keys(("bot", "agent", "sk_agent")))
-    r = await client.post("/mcp", json={
-        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
-        "params": {"name": "get_user", "arguments": {}},
-    }, headers={"X-Api-Key": "sk_agent"})
+    r = await client.post(
+        "/mcp",
+        json={
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": "get_user", "arguments": {}},
+        },
+        headers={"X-Api-Key": "sk_agent"},
+    )
     assert r.status_code == 200
     assert "result" in r.json()
 
 
 async def test_rbac_resolved_by_recorded(client, monkeypatch):
-    monkeypatch.setenv("ESCROW_KEYS", _escrow_keys(
-        ("myagent", "agent", "sk_agent"),
-        ("alice", "approver", "sk_alice"),
-    ))
-    t = asyncio.create_task(client.post("/mcp", json={
-        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
-        "params": {"name": "delete_record", "arguments": {}},
-    }, headers={"X-Api-Key": "sk_agent"}))
+    monkeypatch.setenv(
+        "ESCROW_KEYS",
+        _escrow_keys(
+            ("myagent", "agent", "sk_agent"),
+            ("alice", "approver", "sk_alice"),
+        ),
+    )
+    t = asyncio.create_task(
+        client.post(
+            "/mcp",
+            json={
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {"name": "delete_record", "arguments": {}},
+            },
+            headers={"X-Api-Key": "sk_agent"},
+        )
+    )
     await asyncio.sleep(0.05)
 
     pending = (await client.get("/api/pending", headers={"X-Api-Key": "sk_alice"})).json()
     action_id = pending[0]["id"]
 
-    await client.post("/api/resolve",
+    await client.post(
+        "/api/resolve",
         json={"action_id": action_id, "decision": "REJECTED", "rejection_reason": "not needed"},
         headers={"X-Api-Key": "sk_alice"},
     )
@@ -623,10 +709,16 @@ async def test_rbac_legacy_escrow_api_key_is_admin(client, monkeypatch):
     monkeypatch.setenv("ESCROW_API_KEY", "legacy_key")
     monkeypatch.delenv("ESCROW_KEYS", raising=False)
     # Legacy admin key can call /mcp AND /api/pending AND /api/resolve
-    r_mcp = await client.post("/mcp", json={
-        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
-        "params": {"name": "get_user", "arguments": {}},
-    }, headers={"X-Api-Key": "legacy_key"})
+    r_mcp = await client.post(
+        "/mcp",
+        json={
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": "get_user", "arguments": {}},
+        },
+        headers={"X-Api-Key": "legacy_key"},
+    )
     assert r_mcp.status_code == 200
 
     r_pending = await client.get("/api/pending", headers={"X-Api-Key": "legacy_key"})
@@ -637,11 +729,19 @@ async def test_rbac_legacy_escrow_api_key_is_admin(client, monkeypatch):
 # Audit trail tests
 # ---------------------------------------------------------------------------
 
+
 async def test_audit_action_created_on_escrow(client):
-    t = asyncio.create_task(client.post("/mcp", json={
-        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
-        "params": {"name": "delete_record", "arguments": {}},
-    }))
+    t = asyncio.create_task(
+        client.post(
+            "/mcp",
+            json={
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {"name": "delete_record", "arguments": {}},
+            },
+        )
+    )
     await asyncio.sleep(0.05)
 
     pending = (await client.get("/api/pending")).json()
@@ -658,10 +758,17 @@ async def test_audit_action_created_on_escrow(client):
 
 
 async def test_audit_action_approved(client):
-    t = asyncio.create_task(client.post("/mcp", json={
-        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
-        "params": {"name": "delete_record", "arguments": {}},
-    }))
+    t = asyncio.create_task(
+        client.post(
+            "/mcp",
+            json={
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {"name": "delete_record", "arguments": {}},
+            },
+        )
+    )
     await asyncio.sleep(0.05)
 
     pending = (await client.get("/api/pending")).json()
@@ -676,17 +783,24 @@ async def test_audit_action_approved(client):
 
 
 async def test_audit_action_rejected_with_reason(client):
-    t = asyncio.create_task(client.post("/mcp", json={
-        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
-        "params": {"name": "delete_record", "arguments": {}},
-    }))
+    t = asyncio.create_task(
+        client.post(
+            "/mcp",
+            json={
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {"name": "delete_record", "arguments": {}},
+            },
+        )
+    )
     await asyncio.sleep(0.05)
 
     pending = (await client.get("/api/pending")).json()
     action_id = pending[0]["id"]
-    await client.post("/api/resolve", json={
-        "action_id": action_id, "decision": "REJECTED", "rejection_reason": "not authorised"
-    })
+    await client.post(
+        "/api/resolve", json={"action_id": action_id, "decision": "REJECTED", "rejection_reason": "not authorised"}
+    )
     await t
 
     audit = (await client.get(f"/api/audit?action_id={action_id}")).json()
@@ -697,8 +811,11 @@ async def test_audit_action_rejected_with_reason(client):
 
 async def test_audit_timeout(client):
     from proxy.proxy_engine import process_mcp_call
+
     payload = {
-        "jsonrpc": "2.0", "id": 99, "method": "tools/call",
+        "jsonrpc": "2.0",
+        "id": 99,
+        "method": "tools/call",
         "params": {"name": "drop_table", "arguments": {}},
     }
     result = await process_mcp_call(payload, timeout=0.05)
@@ -718,10 +835,18 @@ async def test_audit_timeout(client):
 
 async def test_audit_submitted_by_in_pending_actions(client, monkeypatch):
     monkeypatch.setenv("ESCROW_KEYS", "mybot:agent:sk_bot")
-    t = asyncio.create_task(client.post("/mcp", json={
-        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
-        "params": {"name": "delete_record", "arguments": {}},
-    }, headers={"X-Api-Key": "sk_bot"}))
+    t = asyncio.create_task(
+        client.post(
+            "/mcp",
+            json={
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {"name": "delete_record", "arguments": {}},
+            },
+            headers={"X-Api-Key": "sk_bot"},
+        )
+    )
     await asyncio.sleep(0.05)
 
     # Switch to admin key to read pending
@@ -734,10 +859,17 @@ async def test_audit_submitted_by_in_pending_actions(client, monkeypatch):
 
 
 async def test_audit_endpoint_filters_by_event_type(client):
-    t = asyncio.create_task(client.post("/mcp", json={
-        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
-        "params": {"name": "delete_record", "arguments": {}},
-    }))
+    t = asyncio.create_task(
+        client.post(
+            "/mcp",
+            json={
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {"name": "delete_record", "arguments": {}},
+            },
+        )
+    )
     await asyncio.sleep(0.05)
     pending = (await client.get("/api/pending")).json()
     action_id = pending[0]["id"]
@@ -753,6 +885,7 @@ async def test_audit_endpoint_filters_by_event_type(client):
 # Metrics endpoint tests
 # ---------------------------------------------------------------------------
 
+
 async def test_metrics_empty_db(client):
     resp = await client.get("/metrics")
     assert resp.status_code == 200
@@ -763,10 +896,17 @@ async def test_metrics_empty_db(client):
 
 
 async def test_metrics_pending_count(client):
-    t = asyncio.create_task(client.post("/mcp", json={
-        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
-        "params": {"name": "delete_record", "arguments": {}},
-    }))
+    t = asyncio.create_task(
+        client.post(
+            "/mcp",
+            json={
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {"name": "delete_record", "arguments": {}},
+            },
+        )
+    )
     await asyncio.sleep(0.05)
 
     body = (await client.get("/metrics")).text
@@ -782,24 +922,38 @@ async def test_metrics_pending_count(client):
 
 async def test_metrics_actions_total_labels(client):
     for _ in range(2):
-        t = asyncio.create_task(client.post("/mcp", json={
-            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
-            "params": {"name": "delete_record", "arguments": {}},
-        }))
+        t = asyncio.create_task(
+            client.post(
+                "/mcp",
+                json={
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "tools/call",
+                    "params": {"name": "delete_record", "arguments": {}},
+                },
+            )
+        )
         await asyncio.sleep(0.05)
         pending = (await client.get("/api/pending")).json()
         await client.post("/api/resolve", json={"action_id": pending[0]["id"], "decision": "APPROVED"})
         await t
 
-    t = asyncio.create_task(client.post("/mcp", json={
-        "jsonrpc": "2.0", "id": 2, "method": "tools/call",
-        "params": {"name": "delete_record", "arguments": {}},
-    }))
+    t = asyncio.create_task(
+        client.post(
+            "/mcp",
+            json={
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/call",
+                "params": {"name": "delete_record", "arguments": {}},
+            },
+        )
+    )
     await asyncio.sleep(0.05)
     pending = (await client.get("/api/pending")).json()
-    await client.post("/api/resolve", json={
-        "action_id": pending[0]["id"], "decision": "REJECTED", "rejection_reason": "no"
-    })
+    await client.post(
+        "/api/resolve", json={"action_id": pending[0]["id"], "decision": "REJECTED", "rejection_reason": "no"}
+    )
     await t
 
     body = (await client.get("/metrics")).text
@@ -809,10 +963,17 @@ async def test_metrics_actions_total_labels(client):
 
 
 async def test_metrics_latency_nonzero_after_resolution(client):
-    t = asyncio.create_task(client.post("/mcp", json={
-        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
-        "params": {"name": "delete_record", "arguments": {}},
-    }))
+    t = asyncio.create_task(
+        client.post(
+            "/mcp",
+            json={
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {"name": "delete_record", "arguments": {}},
+            },
+        )
+    )
     await asyncio.sleep(0.05)
     pending = (await client.get("/api/pending")).json()
     await client.post("/api/resolve", json={"action_id": pending[0]["id"], "decision": "APPROVED"})
@@ -828,10 +989,17 @@ async def test_metrics_latency_nonzero_after_resolution(client):
 
 
 async def test_metrics_audit_events_appear(client):
-    t = asyncio.create_task(client.post("/mcp", json={
-        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
-        "params": {"name": "delete_record", "arguments": {}},
-    }))
+    t = asyncio.create_task(
+        client.post(
+            "/mcp",
+            json={
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {"name": "delete_record", "arguments": {}},
+            },
+        )
+    )
     await asyncio.sleep(0.05)
     pending = (await client.get("/api/pending")).json()
     await client.post("/api/resolve", json={"action_id": pending[0]["id"], "decision": "APPROVED"})

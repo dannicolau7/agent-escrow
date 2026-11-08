@@ -3,9 +3,10 @@
 Values are computed from the database with aggregate queries, so they stay
 correct across restarts.  Review latency is exported as a real histogram.
 """
+
 from __future__ import annotations
 
-from typing import Any, List, Tuple
+from typing import Any
 
 from . import db
 
@@ -34,19 +35,18 @@ def collect() -> str:
     # Histogram over human-reviewed actions only (system timeouts excluded).
     secs_expr = "(julianday(resolved_at) - julianday(created_at)) * 86400.0"
     bucket_cols = ", ".join(f"SUM(CASE WHEN {secs_expr} <= {b} THEN 1 ELSE 0 END)" for b in _BUCKETS)
-    hist = db._query(
-        f"SELECT COUNT(*), COALESCE(SUM({secs_expr}), 0), {bucket_cols} FROM pending_actions "
-        "WHERE resolved_at IS NOT NULL AND created_at IS NOT NULL "
-        "AND COALESCE(resolved_by, '') != 'system'"
-    )[0]
+    where = "WHERE resolved_at IS NOT NULL AND created_at IS NOT NULL AND COALESCE(resolved_by, '') != 'system'"
+    # Built only from the constants above; no user input reaches this SQL.
+    sql = f"SELECT COUNT(*), COALESCE(SUM({secs_expr}), 0), {bucket_cols} FROM pending_actions {where}"  # noqa: S608
+    hist = db._query(sql)[0]
     lat_count, lat_sum = hist[0], float(hist[1] or 0.0)
     bucket_counts = [int(v or 0) for v in hist[2:]]
 
     audit_rows = db._query("SELECT event_type, COUNT(*) AS n FROM audit_log GROUP BY event_type")
 
-    lines: List[str] = []
+    lines: list[str] = []
 
-    def metric(name: str, help_text: str, mtype: str, samples: List[Tuple[str, Any]]) -> None:
+    def metric(name: str, help_text: str, mtype: str, samples: list[tuple[str, Any]]) -> None:
         lines.append(f"# HELP {name} {help_text}")
         lines.append(f"# TYPE {name} {mtype}")
         for labels, value in samples:
@@ -64,7 +64,10 @@ def collect() -> str:
         "Held tool calls, labelled by outcome and risk.",
         "counter",
         [
-            (f'status="{_esc(r["status"])}",risk_level="{_esc(r["risk_level"])}",category="{_esc(r["category"])}"', r["n"])
+            (
+                f'status="{_esc(r["status"])}",risk_level="{_esc(r["risk_level"])}",category="{_esc(r["category"])}"',
+                r["n"],
+            )
             for r in action_rows
         ],
     )
@@ -79,7 +82,7 @@ def collect() -> str:
     # Histogram (cumulative buckets, as Prometheus expects).
     lines.append("# HELP escrow_review_latency_seconds Time from hold to human decision.")
     lines.append("# TYPE escrow_review_latency_seconds histogram")
-    for b, n in zip(_BUCKETS, bucket_counts):
+    for b, n in zip(_BUCKETS, bucket_counts, strict=False):
         lines.append(f'escrow_review_latency_seconds_bucket{{le="{b}"}} {n}')
     lines.append(f'escrow_review_latency_seconds_bucket{{le="+Inf"}} {lat_count}')
     lines.append(f"escrow_review_latency_seconds_sum {lat_sum:.3f}")

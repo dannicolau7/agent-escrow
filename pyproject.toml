@@ -1,0 +1,31 @@
+[project]
+name = "agent-escrow"
+version = "1.1.0"
+requires-python = ">=3.11"
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+extend-exclude = ["web", "grafana"]
+
+[tool.ruff.lint]
+# E/W pycodestyle, F pyflakes, I isort, B bugbear, ASYNC async pitfalls,
+# S bandit security checks, UP pyupgrade, RUF ruff-specific
+select = ["E", "W", "F", "I", "B", "ASYNC", "S", "UP", "RUF"]
+ignore = [
+  "E501",    # long lines: handled by the formatter where possible
+  "S101",    # assert is fine in tests
+  "S104",    # binding 0.0.0.0 is intentional in the container
+  "RUF001", "RUF002", "RUF003",  # unicode arrows/ellipses in strings and comments
+]
+
+[tool.ruff.lint.per-file-ignores]
+"test_*.py" = ["S105", "S106", "S108", "S603", "B011"]
+"conftest.py" = ["S105"]
+"scripts/*.py" = ["T201"]
+
+[tool.pyright]
+include = ["proxy", "scripts"]
+pythonVersion = "3.11"
+typeCheckingMode = "basic"
+reportMissingModuleSource = false

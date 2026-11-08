@@ -3,7 +3,6 @@ from __future__ import annotations
 import hmac
 import os
 from dataclasses import dataclass
-from typing import Optional
 
 from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse
@@ -51,16 +50,16 @@ def load_keys() -> dict[str, _KeyInfo]:
 _load_keys = load_keys
 
 
-def _lookup(keys: dict[str, _KeyInfo], token: str) -> Optional[_KeyInfo]:
+def _lookup(keys: dict[str, _KeyInfo], token: str) -> _KeyInfo | None:
     """Constant-time comparison against every configured key."""
-    found: Optional[_KeyInfo] = None
+    found: _KeyInfo | None = None
     for key, info in keys.items():
         if hmac.compare_digest(key.encode(), token.encode()):
             found = info
     return found
 
 
-def _extract_token(request: Request) -> Optional[str]:
+def _extract_token(request: Request) -> str | None:
     auth = request.headers.get("authorization", "")
     if auth.lower().startswith("bearer "):
         return auth[7:].strip() or None
@@ -125,6 +124,7 @@ async def api_key_middleware(request: Request, call_next):
 # ---------------------------------------------------------------------------
 # FastAPI dependencies for route-level role enforcement
 # ---------------------------------------------------------------------------
+
 
 def _role(request: Request) -> str:
     # Default to no privileges if the middleware somehow didn't run.

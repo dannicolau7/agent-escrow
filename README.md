@@ -27,9 +27,14 @@ AgentEscrow proxy  (port 4000)
 ## Quick start (local development)
 
 ```bash
-pip install -r requirements-dev.txt
-python -m proxy          # dev mode on http://127.0.0.1:4000
+make install     # .venv, dev deps, web deps, git hooks
+make dev         # proxy (dev mode) + fake MCP server on http://127.0.0.1:4000
+make demo        # in a second terminal: an agent sends safe and risky calls
 ```
+
+Approve or reject the held calls at http://127.0.0.1:4000/ui/ (`J` / `K`). `make help` lists every command; `make check` runs what CI runs. Coding agents must follow [AGENTS.md](AGENTS.md).
+
+Without make: `pip install -r requirements-dev.txt && python -m proxy`.
 
 `python -m proxy` runs in **dev mode**: with no API keys everyone is admin, and with no `MCP_UPSTREAM_URL` approved calls return a `[mock upstream]` result. Production mode (the default everywhere else, including Docker) refuses to start without keys and an upstream.
 
@@ -50,7 +55,9 @@ cd web && NEXT_PUBLIC_API_URL=http://localhost:4000 npm run dev   # http://local
 ### Tests
 
 ```bash
-pytest
+make test        # unit tests
+make e2e         # end-to-end: real proxy + fake MCP server processes
+make lint        # ruff + pyright
 ```
 
 ## Production

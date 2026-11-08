@@ -10,6 +10,7 @@ Covers:
  - MCP timeout via direct call to process_mcp_call
  - unlisted tools held by default policy
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -29,6 +30,7 @@ pytestmark = pytest.mark.asyncio
 # Fixture
 # ---------------------------------------------------------------------------
 
+
 @pytest_asyncio.fixture
 async def client(tmp_path):
     db.DB_PATH = tmp_path / "test_escrow.db"
@@ -44,10 +46,10 @@ async def client(tmp_path):
     db._conn = None
 
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _mcp_payload(tool_name: str, args: dict | None = None, rpc_id: int = 1) -> dict:
     return {
@@ -66,6 +68,7 @@ async def _get_pending(client) -> list:
 # 1. Safe read (get_* prefix) → auto-approved, nothing lands in pending
 # ---------------------------------------------------------------------------
 
+
 async def test_safe_read_auto_approved(client):
     r = await client.post("/mcp", json=_mcp_payload("get_customer_info"))
     assert r.status_code == 200
@@ -79,6 +82,7 @@ async def test_safe_read_auto_approved(client):
 # 2. list_* prefix → auto-approved
 # ---------------------------------------------------------------------------
 
+
 async def test_list_prefix_auto_approved(client):
     r = await client.post("/mcp", json=_mcp_payload("list_orders"))
     assert "result" in r.json()
@@ -89,6 +93,7 @@ async def test_list_prefix_auto_approved(client):
 # 3. search_* prefix → auto-approved
 # ---------------------------------------------------------------------------
 
+
 async def test_search_prefix_auto_approved(client):
     r = await client.post("/mcp", json=_mcp_payload("search_records", {"q": "foo"}))
     assert "result" in r.json()
@@ -98,6 +103,7 @@ async def test_search_prefix_auto_approved(client):
 # ---------------------------------------------------------------------------
 # 4. Mutating call appears in /api/pending
 # ---------------------------------------------------------------------------
+
 
 async def test_mutating_call_appears_in_pending(client):
     async def _call():
@@ -121,6 +127,7 @@ async def test_mutating_call_appears_in_pending(client):
 # 5. Approve flow: MCP response carries approval text
 # ---------------------------------------------------------------------------
 
+
 async def test_mcp_approve_flow(client):
     async def _call():
         return await client.post("/mcp", json=_mcp_payload("update_record", {"id": 1}))
@@ -131,9 +138,7 @@ async def test_mcp_approve_flow(client):
     pending = await _get_pending(client)
     action_id = pending[0]["id"]
 
-    r_resolve = await client.post(
-        "/api/resolve", json={"action_id": action_id, "decision": "APPROVED"}
-    )
+    r_resolve = await client.post("/api/resolve", json={"action_id": action_id, "decision": "APPROVED"})
     assert r_resolve.status_code == 200
     assert r_resolve.json()["resolved_as"] == "APPROVED"
 
@@ -145,6 +150,7 @@ async def test_mcp_approve_flow(client):
 # ---------------------------------------------------------------------------
 # 6. Reject flow: MCP response is a JSON-RPC error with the reason
 # ---------------------------------------------------------------------------
+
 
 async def test_mcp_reject_flow(client):
     async def _call():
@@ -170,6 +176,7 @@ async def test_mcp_reject_flow(client):
 # 7. /api/history reflects resolved actions
 # ---------------------------------------------------------------------------
 
+
 async def test_history_shows_resolved_action(client):
     async def _call():
         return await client.post("/mcp", json=_mcp_payload("write_file", {"path": "/tmp/x"}))
@@ -193,6 +200,7 @@ async def test_history_shows_resolved_action(client):
 # 8. /api/resolve with invalid decision → 400
 # ---------------------------------------------------------------------------
 
+
 async def test_resolve_invalid_decision(client):
     async def _call():
         return await client.post("/mcp", json=_mcp_payload("delete_record", {}))
@@ -215,16 +223,16 @@ async def test_resolve_invalid_decision(client):
 # 9. /api/resolve with unknown action_id → 404
 # ---------------------------------------------------------------------------
 
+
 async def test_resolve_unknown_action(client):
-    r = await client.post(
-        "/api/resolve", json={"action_id": "ghost-action", "decision": "APPROVED"}
-    )
+    r = await client.post("/api/resolve", json={"action_id": "ghost-action", "decision": "APPROVED"})
     assert r.status_code == 404
 
 
 # ---------------------------------------------------------------------------
 # 10. MCP timeout: process_mcp_call returns a JSON-RPC error
 # ---------------------------------------------------------------------------
+
 
 async def test_mcp_timeout(client):
     payload = _mcp_payload("delete_record", {"id": 99}, rpc_id=99)
@@ -240,6 +248,7 @@ async def test_mcp_timeout(client):
 # ---------------------------------------------------------------------------
 # 11. Unlisted tool with no matching patterns → held by default
 # ---------------------------------------------------------------------------
+
 
 async def test_unlisted_mcp_tool_held_by_default(client):
     async def _call():
@@ -260,6 +269,7 @@ async def test_unlisted_mcp_tool_held_by_default(client):
 # ---------------------------------------------------------------------------
 # 12. /api/pending is empty after all actions resolved
 # ---------------------------------------------------------------------------
+
 
 async def test_pending_empty_after_resolution(client):
     async def _submit(tool):

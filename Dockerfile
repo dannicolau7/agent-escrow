@@ -35,4 +35,7 @@ EXPOSE 4000
 
 # --proxy-headers so client IPs in the audit log are correct behind a TLS proxy.
 # One worker only: held actions live in this process (see DEPLOY.md).
-CMD ["uvicorn", "proxy.main:app", "--host", "0.0.0.0", "--port", "4000", "--workers", "1", "--proxy-headers"]
+# --timeout-graceful-shutdown: held requests would otherwise keep the server
+# alive for the whole hold timeout on restart; after 5 s they are cancelled,
+# marked REJECTED and the agent's connection is closed.
+CMD ["uvicorn", "proxy.main:app", "--host", "0.0.0.0", "--port", "4000", "--workers", "1", "--proxy-headers", "--timeout-graceful-shutdown", "5"]

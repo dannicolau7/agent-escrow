@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from typing import Any, Dict, Optional
+from typing import Any
 
 from . import db, settings
 from .config import classify_tool_call
@@ -11,7 +11,7 @@ from .forwarder import forward_full
 from .logs import log
 from .notifications import notify_action_added, notify_action_resolved, schedule
 
-EXECUTION_WAITERS: Dict[str, Dict[str, Any]] = {}
+EXECUTION_WAITERS: dict[str, dict[str, Any]] = {}
 
 
 def _rpc_error(rpc_id: Any, message: str, code: int = -32000) -> dict:
@@ -19,12 +19,12 @@ def _rpc_error(rpc_id: Any, message: str, code: int = -32000) -> dict:
 
 
 async def _execute(
-    action_id: Optional[str],
+    action_id: str | None,
     payload: dict,
     forward_headers: dict | None,
     tool_name: str,
-    actor: Optional[str],
-    ip_address: Optional[str],
+    actor: str | None,
+    ip_address: str | None,
 ) -> dict:
     """Send the call upstream and record what actually happened."""
     result = await forward_full(payload, forward_headers)
@@ -52,7 +52,7 @@ async def _execute(
 
 async def process_mcp_call(
     payload: dict,
-    timeout: float | None = None,
+    timeout: float | None = None,  # noqa: ASYNC109 (hold timeout, not an I/O timeout)
     forward_headers: dict | None = None,
     submitted_by: str | None = None,
     ip_address: str | None = None,
@@ -125,13 +125,17 @@ async def process_mcp_call(
 
         try:
             await asyncio.wait_for(event.wait(), timeout=timeout)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             if db.update_action_status(
                 action_id, "REJECTED", f"Hold timed out after {timeout:g} seconds.", resolved_by="system"
             ):
                 db.insert_audit_log("action.timeout", action_id=action_id, detail={"tool_name": tool_name})
                 broadcast("action_resolved", {"action_id": action_id, "status": "REJECTED"})
-                schedule(notify_action_resolved(action_id=action_id, tool_name=tool_name, status="TIMEOUT", resolved_by="system"))
+                schedule(
+                    notify_action_resolved(
+                        action_id=action_id, tool_name=tool_name, status="TIMEOUT", resolved_by="system"
+                    )
+                )
                 log.info("action.timeout", extra={"action_id": action_id, "tool_name": tool_name})
                 return _rpc_error(rpc_id, "Escrow Timeout: Action was not approved by human in time.")
             # A reviewer resolved it at the last moment; fall through and honour that.

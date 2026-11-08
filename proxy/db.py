@@ -6,9 +6,9 @@ import json
 import os as _os
 import sqlite3
 import threading
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 DB_PATH: Path = Path(_os.environ.get("DB_PATH") or Path(__file__).parent / "escrow.db")
 
@@ -16,13 +16,13 @@ DB_PATH: Path = Path(_os.environ.get("DB_PATH") or Path(__file__).parent / "escr
 # because sync routes run in FastAPI's threadpool while async routes run on
 # the event loop thread.
 _lock = threading.RLock()
-_conn: Optional[sqlite3.Connection] = None
+_conn: sqlite3.Connection | None = None
 
 _MAX_RESULT_CHARS = 20_000
 
 
 def _utcnow() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def get_conn() -> sqlite3.Connection:
@@ -40,7 +40,7 @@ def get_db() -> sqlite3.Connection:
     return get_conn()
 
 
-def _query(sql: str, params: tuple | list = ()) -> List[sqlite3.Row]:
+def _query(sql: str, params: tuple | list = ()) -> list[sqlite3.Row]:
     conn = get_conn()
     with _lock:
         return conn.execute(sql, params).fetchall()
@@ -113,6 +113,7 @@ def init_db() -> None:
 # Actions
 # ---------------------------------------------------------------------------
 
+
 def insert_action(
     *,
     action_id: str,
@@ -121,8 +122,8 @@ def insert_action(
     category: str,
     risk_level: str,
     reason: str,
-    args: Dict[str, Any],
-    submitted_by: Optional[str] = None,
+    args: dict[str, Any],
+    submitted_by: str | None = None,
 ) -> None:
     conn = get_conn()
     with _lock:
@@ -151,8 +152,8 @@ def insert_action(
 def update_action_status(
     action_id: str,
     status: str,
-    rejection_reason: Optional[str] = None,
-    resolved_by: Optional[str] = None,
+    rejection_reason: str | None = None,
+    resolved_by: str | None = None,
 ) -> bool:
     """Update status only if currently PENDING. Returns True if updated."""
     conn = get_conn()
@@ -187,7 +188,7 @@ def record_execution(action_id: str, status: str, result: Any) -> None:
         conn.commit()
 
 
-def get_action(action_id: str) -> Optional[Dict[str, Any]]:
+def get_action(action_id: str) -> dict[str, Any] | None:
     rows = _query("SELECT * FROM pending_actions WHERE id = ?", (action_id,))
     return dict(rows[0]) if rows else None
 
@@ -197,7 +198,7 @@ def count_pending() -> int:
     return rows[0][0] if rows else 0
 
 
-def reject_stale_pending(reason: str) -> List[str]:
+def reject_stale_pending(reason: str) -> list[str]:
     """Mark all PENDING rows as REJECTED. Called on startup when in-memory
     waiters are gone.  Returns the ids that were rejected.
 
@@ -215,7 +216,7 @@ def reject_stale_pending(reason: str) -> List[str]:
     return ids
 
 
-def _decode_row(row: sqlite3.Row) -> Dict[str, Any]:
+def _decode_row(row: sqlite3.Row) -> dict[str, Any]:
     item = dict(row)
     try:
         item["raw_arguments"] = json.loads(item["raw_arguments"])
@@ -224,12 +225,12 @@ def _decode_row(row: sqlite3.Row) -> Dict[str, Any]:
     return item
 
 
-def get_pending_actions() -> List[Dict[str, Any]]:
+def get_pending_actions() -> list[dict[str, Any]]:
     rows = _query("SELECT * FROM pending_actions WHERE status = 'PENDING' ORDER BY created_at ASC")
     return [_decode_row(r) for r in rows]
 
 
-def get_resolved_history(limit: int = 20) -> List[Dict[str, Any]]:
+def get_resolved_history(limit: int = 20) -> list[dict[str, Any]]:
     limit = max(1, min(int(limit), 1000))
     rows = _query(
         "SELECT * FROM pending_actions WHERE status != 'PENDING' ORDER BY resolved_at DESC LIMIT ?",
@@ -251,7 +252,7 @@ def get_resolved_history(limit: int = 20) -> List[Dict[str, Any]]:
 _AUDIT_FIELDS = ("event_type", "action_id", "actor", "ip_address", "detail", "created_at")
 
 
-def _audit_digest(prev_hash: str, fields: Dict[str, Any]) -> str:
+def _audit_digest(prev_hash: str, fields: dict[str, Any]) -> str:
     canonical = json.dumps({k: fields.get(k) for k in _AUDIT_FIELDS}, sort_keys=True, separators=(",", ":"))
     msg = (prev_hash + canonical).encode()
     key = _os.environ.get("ESCROW_AUDIT_KEY", "")
@@ -263,10 +264,10 @@ def _audit_digest(prev_hash: str, fields: Dict[str, Any]) -> str:
 def insert_audit_log(
     event_type: str,
     *,
-    action_id: Optional[str] = None,
-    actor: Optional[str] = None,
-    ip_address: Optional[str] = None,
-    detail: Optional[Dict[str, Any]] = None,
+    action_id: str | None = None,
+    actor: str | None = None,
+    ip_address: str | None = None,
+    detail: dict[str, Any] | None = None,
 ) -> None:
     conn = get_conn()
     fields = {
@@ -279,7 +280,7 @@ def insert_audit_log(
     }
     with _lock:
         last = conn.execute("SELECT hash FROM audit_log ORDER BY id DESC LIMIT 1").fetchone()
-        prev_hash = (last[0] if last and last[0] else "")
+        prev_hash = last[0] if last and last[0] else ""
         digest = _audit_digest(prev_hash, fields)
         conn.execute(
             """INSERT INTO audit_log
@@ -290,7 +291,7 @@ def insert_audit_log(
         conn.commit()
 
 
-def verify_audit_chain() -> Dict[str, Any]:
+def verify_audit_chain() -> dict[str, Any]:
     """Recompute the chain.  Returns {"ok", "checked", "first_bad_id"}."""
     rows = _query("SELECT * FROM audit_log ORDER BY id ASC")
     prev = ""
@@ -308,13 +309,13 @@ def verify_audit_chain() -> Dict[str, Any]:
 
 def get_audit_log(
     limit: int = 50,
-    action_id: Optional[str] = None,
-    event_type: Optional[str] = None,
-    since: Optional[str] = None,
-    until: Optional[str] = None,
-) -> List[Dict[str, Any]]:
-    clauses: List[str] = []
-    params: List[Any] = []
+    action_id: str | None = None,
+    event_type: str | None = None,
+    since: str | None = None,
+    until: str | None = None,
+) -> list[dict[str, Any]]:
+    clauses: list[str] = []
+    params: list[Any] = []
     if action_id:
         clauses.append("action_id = ?")
         params.append(action_id)
@@ -329,7 +330,8 @@ def get_audit_log(
         params.append(until)
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
     params.append(max(1, min(int(limit), 100_000)))
-    rows = _query(f"SELECT * FROM audit_log {where} ORDER BY id DESC LIMIT ?", params)
+    # `where` only joins the fixed clauses above; every value is a bound parameter.
+    rows = _query(f"SELECT * FROM audit_log {where} ORDER BY id DESC LIMIT ?", params)  # noqa: S608
     result = []
     for row in rows:
         d = dict(row)

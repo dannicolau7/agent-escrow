@@ -2,35 +2,35 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any
 
 import yaml
 
 POLICY_PATH = Path(__file__).parent / "policies.yaml"
 
 # Loaded once at import time; call load_policy() to force a reload (e.g. tests).
-_POLICIES: Dict[str, Any] = {}
+_POLICIES: dict[str, Any] = {}
 
 # Words that chain a second operation onto a read ("get_and_delete_user").
 # A tool name containing one of these is never auto-approved.
 _DEFAULT_CHAIN_WORDS = ("and", "then", "or", "also", "plus")
 
 
-def load_policy() -> Dict[str, Any]:
+def load_policy() -> dict[str, Any]:
     """Read policies.yaml and cache the result.  Safe to call multiple times."""
     global _POLICIES
-    with open(POLICY_PATH, "r", encoding="utf-8") as fh:
+    with open(POLICY_PATH, encoding="utf-8") as fh:
         _POLICIES = yaml.safe_load(fh) or {}
     return _POLICIES
 
 
-def _policies() -> Dict[str, Any]:
+def _policies() -> dict[str, Any]:
     if not _POLICIES:
         load_policy()
     return _POLICIES
 
 
-def tokenize(tool_name: str) -> List[str]:
+def tokenize(tool_name: str) -> list[str]:
     """Split a tool name into lowercase words.
 
     Handles snake_case, kebab-case, dotted.names and camelCase:
@@ -41,7 +41,7 @@ def tokenize(tool_name: str) -> List[str]:
     return [w for w in re.split(r"[^A-Za-z0-9]+", spaced.lower()) if w]
 
 
-def _read_verbs(rules: Dict[str, Any]) -> List[str]:
+def _read_verbs(rules: dict[str, Any]) -> list[str]:
     verbs = list(rules.get("auto_approve_verbs", []))
     # Back-compat: "get_" style prefixes → "get"
     for prefix in rules.get("auto_approve_prefixes", []):
@@ -64,7 +64,8 @@ def _read_verbs(rules: Dict[str, Any]) -> List[str]:
 #   5. Default            → HOLD/MEDIUM/GENERIC_WRITE (fail-safe)
 # ---------------------------------------------------------------------------
 
-def classify_tool_call(tool_name: str) -> Dict[str, str]:
+
+def classify_tool_call(tool_name: str) -> dict[str, str]:
     """Return {"action", "risk_level", "category"} for a tool name."""
     p = _policies()
     rules = p.get("rules", {})
@@ -81,15 +82,14 @@ def classify_tool_call(tool_name: str) -> Dict[str, str]:
     word_set = set(words)
     mutations = rules.get("mutations", [])
 
-    def _matches(rule: Dict[str, Any]) -> bool:
+    def _matches(rule: dict[str, Any]) -> bool:
         rule_words = {str(w).lower() for w in rule.get("words", [])}
         pattern = rule.get("pattern")
         return bool(
-            (rule_words and rule_words & word_set)
-            or (pattern and re.search(pattern, tool_name, re.IGNORECASE))
+            (rule_words and rule_words & word_set) or (pattern and re.search(pattern, tool_name, re.IGNORECASE))
         )
 
-    def _hold(rule: Dict[str, Any]) -> Dict[str, str]:
+    def _hold(rule: dict[str, Any]) -> dict[str, str]:
         return {
             "action": "HOLD",
             "risk_level": rule.get("risk_level", "MEDIUM"),

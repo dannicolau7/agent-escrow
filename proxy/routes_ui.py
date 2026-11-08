@@ -3,7 +3,6 @@ from __future__ import annotations
 import csv
 import io
 import json
-from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import PlainTextResponse, Response, StreamingResponse
@@ -24,7 +23,7 @@ router = APIRouter()
 class ResolveRequest(BaseModel):
     action_id: str
     decision: str
-    rejection_reason: Optional[str] = None
+    rejection_reason: str | None = None
 
 
 @router.get("/api/pending", dependencies=[Depends(require_viewer)])
@@ -79,9 +78,11 @@ async def resolve_action(req: ResolveRequest, request: Request):
 async def sse_events():
     """Server-Sent Events stream.  Auth handled by the middleware (including
     the ?api_key= query param, accepted only on this path)."""
+
     async def _stream():
         async for chunk in subscribe():
             yield chunk
+
     return StreamingResponse(
         _stream(),
         media_type="text/event-stream",
@@ -98,8 +99,8 @@ def list_history(limit: int = Query(20, ge=1, le=1000)):
 @router.get("/api/audit", dependencies=[Depends(require_viewer)])
 def list_audit(
     limit: int = Query(50, ge=1, le=1000),
-    action_id: Optional[str] = None,
-    event_type: Optional[str] = None,
+    action_id: str | None = None,
+    event_type: str | None = None,
 ):
     db.ensure_db()
     return get_audit_log(limit=limit, action_id=action_id, event_type=event_type)
@@ -108,8 +109,8 @@ def list_audit(
 @router.get("/api/audit/export", dependencies=[Depends(require_admin)])
 def export_audit(
     format: str = Query("csv", pattern="^(csv|jsonl)$"),
-    since: Optional[str] = None,
-    until: Optional[str] = None,
+    since: str | None = None,
+    until: str | None = None,
     limit: int = Query(100_000, ge=1, le=100_000),
 ):
     """Download the audit log (oldest first) as CSV or JSON Lines, including
@@ -129,7 +130,7 @@ def export_audit(
     writer.writeheader()
     for r in rows:
         r = dict(r)
-        if isinstance(r.get("detail"), (dict, list)):
+        if isinstance(r.get("detail"), dict | list):
             r["detail"] = json.dumps(r["detail"], sort_keys=True)
         writer.writerow(r)
     return Response(
