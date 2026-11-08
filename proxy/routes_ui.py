@@ -32,9 +32,14 @@ async def resolve_action(req: ResolveRequest):
     if req.decision not in ["APPROVED", "REJECTED"]:
         raise HTTPException(status_code=400, detail="Decision must be APPROVED or REJECTED")
 
-    success = resolve_waiter(req.action_id, req.decision, req.rejection_reason)
-    if not success:
+    # Write to DB first so /api/pending never returns this action again,
+    # even if the poll fires before the waiter coroutine resumes.
+    updated = db.update_action_status(req.action_id, req.decision, req.rejection_reason)
+    if not updated:
         raise HTTPException(status_code=404, detail="Action not found or already resolved")
+
+    # Signal the live waiter if the agent is still connected (no-op for stale actions).
+    resolve_waiter(req.action_id, req.decision, req.rejection_reason)
 
     return {"status": "ok", "action_id": req.action_id, "resolved_as": req.decision}
 

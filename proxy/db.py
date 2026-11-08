@@ -144,18 +144,20 @@ def update_action_status(
     action_id: str,
     status: str,
     rejection_reason: Optional[str] = None,
-) -> None:
+) -> bool:
+    """Update status only if currently PENDING. Returns True if updated."""
     conn = get_conn()
     with _lock:
-        conn.execute(
+        cur = conn.execute(
             """
             UPDATE pending_actions
             SET status = ?, rejection_reason = ?, resolved_at = ?
-            WHERE id = ?
+            WHERE id = ? AND status = 'PENDING'
             """,
             (status, rejection_reason, _utcnow(), action_id),
         )
         conn.commit()
+    return cur.rowcount > 0
 
 
 def get_pending_actions() -> List[Dict[str, Any]]:
