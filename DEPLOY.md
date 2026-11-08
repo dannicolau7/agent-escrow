@@ -36,7 +36,9 @@ In `fly.toml` mount the volume at `/data`, set `internal_port = 4000`, and **kee
 
 ## 3. Connecting an agent
 
-Point the agent's MCP client at `https://<host>/mcp` (Streamable HTTP) with header `Authorization: Bearer <agent key>`. Raise the client's request timeout above `ESCROW_HOLD_TIMEOUT` (300 s by default), or held calls will time out on the client side before a human can review them.
+Point the agent's MCP client at `https://<host>/mcp` (Streamable HTTP) with header `Authorization: Bearer <agent key>`.
+
+Client request timeouts matter: many clients give up after ~60 s, but a review can take minutes. Either raise the client's timeout above `ESCROW_HOLD_TIMEOUT` (or enable its reset-on-progress option; the proxy sends progress heartbeats), or set `ESCROW_HOLD_MODE=async` so held calls answer immediately and the agent polls `escrow_get_result`. See "Client timeouts" in the README.
 
 The upstream must speak MCP over Streamable HTTP. Servers that only support stdio need an HTTP bridge in front of them (for example `mcp-proxy` / `supergateway`).
 

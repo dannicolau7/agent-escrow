@@ -1,20 +1,23 @@
 from __future__ import annotations
 
+import asyncio
+import contextlib
+import json
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, RedirectResponse, Response
+from fastapi.responses import JSONResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import db, logs, settings
 from .auth import api_key_middleware, require_agent
-from .config import load_policy
+from .config import classify_tool_call, load_policy
 from .events import broadcast
 from .forwarder import forward_full
 from .logs import log
-from .proxy_engine import process_mcp_call
+from .proxy_engine import RESULT_TOOL, RESULT_TOOL_DEFINITION, expire_async_holds, get_result, process_mcp_call
 from .routes_ui import router as ui_router
 
 # MCP methods that are passed straight through without escrow.  These are the
@@ -46,8 +49,25 @@ async def lifespan(app: FastAPI):
     for action_id in stale:
         broadcast("action_resolved", {"action_id": action_id, "status": "REJECTED"})
     db.insert_audit_log("server.started", detail={"stale_purged": len(stale), "mode": settings.mode()})
-    log.info("server.started", extra={"mode": settings.mode(), "stale_purged": len(stale)})
+    log.info(
+        "server.started",
+        extra={"mode": settings.mode(), "stale_purged": len(stale), "hold_mode": settings.hold_mode()},
+    )
+    sweeper = asyncio.create_task(_sweep_expired_holds())
     yield
+    sweeper.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await sweeper
+
+
+async def _sweep_expired_holds(interval: float = 15.0) -> None:
+    """Async-mode actions have no waiting request to time them out."""
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            expire_async_holds()
+        except Exception:
+            log.exception("sweeper.failed")
 
 
 app = FastAPI(
@@ -124,7 +144,10 @@ async def handle_mcp(request: Request):
         result = await forward_full(payload, dict(request.headers))
         if result.body is None:
             return Response(status_code=202, headers=result.headers)
-        return JSONResponse(result.body, headers=result.headers)
+        body = result.body
+        if method == "tools/list" and settings.hold_mode() == "async":
+            body = _with_result_tool(body)
+        return JSONResponse(body, headers=result.headers)
 
     params = payload.get("params")
     if not isinstance(params, dict):
@@ -137,9 +160,74 @@ async def handle_mcp(request: Request):
     if args is not None and not isinstance(args, dict):
         return _rpc_error(rpc_id, -32602, "Invalid params: arguments must be an object")
 
-    return await process_mcp_call(
+    if params["name"] == RESULT_TOOL:
+        return get_result(rpc_id, (args or {}).get("action_id"), submitter, getattr(request.state, "role", ""))
+
+    call = process_mcp_call(
         payload,
         forward_headers=dict(request.headers),
         submitted_by=submitter,
         ip_address=client_ip,
     )
+
+    # Wait mode + a client that accepts SSE + a call that will be held:
+    # stream heartbeats so the client knows we're alive while a human decides.
+    if (
+        settings.hold_mode() == "wait"
+        and "text/event-stream" in request.headers.get("accept", "")
+        and classify_tool_call(params["name"])["action"] == "HOLD"
+    ):
+        meta = params.get("_meta")
+        token = meta.get("progressToken") if isinstance(meta, dict) else None
+        return StreamingResponse(
+            _stream_until_decided(call, token),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
+    return await call
+
+
+def _with_result_tool(body: dict) -> dict:
+    """Advertise escrow_get_result alongside the upstream's tools (async mode)."""
+    result = body.get("result")
+    if not isinstance(result, dict) or not isinstance(result.get("tools"), list):
+        return body
+    tools = [t for t in result["tools"] if not (isinstance(t, dict) and t.get("name") == RESULT_TOOL)]
+    return {**body, "result": {**result, "tools": [*tools, RESULT_TOOL_DEFINITION]}}
+
+
+async def _stream_until_decided(call, progress_token):
+    """SSE body for a held call: heartbeats, then the final JSON-RPC response.
+
+    With a progressToken (MCP `_meta.progressToken`) the heartbeats are
+    `notifications/progress` messages, which MCP clients can use to reset
+    their request timeout.  Without one they are SSE comments that only keep
+    proxies and load balancers from closing the connection.  If the client
+    disconnects, the held call is cancelled and its action rejected.
+    """
+    task = asyncio.ensure_future(call)
+    beats = 0
+    try:
+        while True:
+            done, _ = await asyncio.wait({task}, timeout=settings.heartbeat_seconds())
+            if done:
+                break
+            beats += 1
+            if progress_token is not None:
+                note = {
+                    "jsonrpc": "2.0",
+                    "method": "notifications/progress",
+                    "params": {
+                        "progressToken": progress_token,
+                        "progress": beats,
+                        "message": "Waiting for human review",
+                    },
+                }
+                yield f"event: message\ndata: {json.dumps(note)}\n\n"
+            else:
+                yield ": waiting for human review\n\n"
+        yield f"event: message\ndata: {json.dumps(task.result())}\n\n"
+    finally:
+        if not task.done():
+            task.cancel()

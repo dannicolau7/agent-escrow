@@ -15,7 +15,7 @@ from .db import get_audit_log, get_pending_actions, get_resolved_history
 from .events import broadcast, subscribe
 from .logs import log
 from .notifications import notify_action_resolved, schedule
-from .proxy_engine import resolve_waiter
+from .proxy_engine import execute_approved_async, resolve_waiter
 
 router = APIRouter()
 
@@ -48,7 +48,9 @@ async def resolve_action(req: ResolveRequest, request: Request):
     if not updated:
         raise HTTPException(status_code=404, detail="Action not found or already resolved")
 
-    resolve_waiter(req.action_id, req.decision, rejection_reason)
+    if not resolve_waiter(req.action_id, req.decision, rejection_reason) and req.decision == "APPROVED":
+        # Async mode: nobody is waiting, so run the approved call in the background.
+        schedule(execute_approved_async(req.action_id, resolved_by, request.client.host if request.client else None))
     broadcast("action_resolved", {"action_id": req.action_id, "status": req.decision})
 
     event_type = "action.approved" if req.decision == "APPROVED" else "action.rejected"

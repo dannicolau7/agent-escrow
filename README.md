@@ -75,6 +75,8 @@ See **[DEPLOY.md](DEPLOY.md)** for Docker Compose, HTTPS, Fly.io and the operati
 | `MCP_UPSTREAM_TOKEN` | Sent upstream as `Authorization: Bearer …` (the agent's escrow key is never forwarded) |
 | `MCP_UPSTREAM_TIMEOUT` | Seconds to wait for the upstream (default 30) |
 | `ESCROW_HOLD_TIMEOUT` | Seconds an action waits for review before auto-rejection (default 300) |
+| `ESCROW_HOLD_MODE` | `wait` (default): keep the agent's request open until a human decides. `async`: answer at once with "held as act_…"; the agent calls the `escrow_get_result` tool for the outcome. See [Client timeouts](#client-timeouts) |
+| `ESCROW_HEARTBEAT_SECONDS` | Wait mode: interval of progress heartbeats on streamed responses (default 15) |
 | `ESCROW_CORS_ORIGINS` | Comma-separated browser origins allowed to call the API (default: same origin; `localhost:3000` in dev) |
 | `ESCROW_AUDIT_KEY` | Secret for signing the audit hash chain (recommended) |
 | `ESCROW_LOG_LEVEL` | JSON log level (default `INFO`) |
@@ -123,6 +125,15 @@ Tool names are split into words (`get_user`, `get-user` and `getUser` all become
 | `GET` | `/metrics` | viewer | Prometheus metrics |
 | `GET` | `/health` | public | Liveness check |
 | `GET` | `/docs` | public | Swagger UI |
+
+## Client timeouts
+
+Many MCP clients give up on a request after about 60 seconds; a human review can take minutes. Two ways to handle it:
+
+- **`wait` mode (default).** If the client accepts `text/event-stream` (Streamable HTTP clients do), a held call is answered with an SSE stream. While it waits, the proxy sends a `notifications/progress` message every `ESCROW_HEARTBEAT_SECONDS` if the request carried `_meta.progressToken` (or an SSE comment otherwise), then the final result. Clients that reset their timeout on progress (e.g. the MCP TypeScript SDK's `resetTimeoutOnProgress`) stay connected. If the client disconnects, the action is withdrawn (REJECTED, "Agent disconnected") so it can't run later with nobody waiting.
+- **`async` mode** (`ESCROW_HOLD_MODE=async`). Works with any client. A held call returns immediately (`isError: false`) with `structuredContent: {"status": "PENDING", "action_id": …}` and text telling the model it has **not** run yet. `tools/list` gains an `escrow_get_result` tool; the agent calls it with the `action_id` to get `PENDING`, `REJECTED`, or the tool's real result once approved. Approved calls run in the background, reusing the original MCP session. An agent can only read results of its own calls. Unreviewed actions expire after `ESCROW_HOLD_TIMEOUT`.
+
+Use `async` when your client's request timeout is shorter than your reviewers' typical response time.
 
 ## Audit log
 

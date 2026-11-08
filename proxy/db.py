@@ -66,7 +66,10 @@ def ensure_db() -> None:
                 resolved_at      TEXT,
                 execution_status TEXT,
                 execution_result TEXT,
-                executed_at      TEXT
+                executed_at      TEXT,
+                hold_mode        TEXT,
+                rpc_payload      TEXT,
+                session_id       TEXT
             );
             CREATE INDEX IF NOT EXISTS idx_pending_actions_status ON pending_actions(status);
             CREATE INDEX IF NOT EXISTS idx_pending_actions_created_at ON pending_actions(created_at);
@@ -93,6 +96,9 @@ def ensure_db() -> None:
             "ALTER TABLE pending_actions ADD COLUMN execution_status TEXT",
             "ALTER TABLE pending_actions ADD COLUMN execution_result TEXT",
             "ALTER TABLE pending_actions ADD COLUMN executed_at TEXT",
+            "ALTER TABLE pending_actions ADD COLUMN hold_mode TEXT",
+            "ALTER TABLE pending_actions ADD COLUMN rpc_payload TEXT",
+            "ALTER TABLE pending_actions ADD COLUMN session_id TEXT",
             "ALTER TABLE audit_log ADD COLUMN prev_hash TEXT",
             "ALTER TABLE audit_log ADD COLUMN hash TEXT",
         ):
@@ -124,15 +130,21 @@ def insert_action(
     reason: str,
     args: dict[str, Any],
     submitted_by: str | None = None,
+    hold_mode: str = "wait",
+    rpc_payload: dict[str, Any] | None = None,
+    session_id: str | None = None,
 ) -> None:
+    """Store a held action.  rpc_payload and session_id are kept so an
+    async-mode action can be sent upstream later, after approval."""
     conn = get_conn()
     with _lock:
         conn.execute(
             """
             INSERT INTO pending_actions (
                 id, rpc_id, tool_name, category, risk_level, reason,
-                raw_arguments, status, submitted_by, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, 'PENDING', ?, ?)
+                raw_arguments, status, submitted_by, created_at,
+                hold_mode, rpc_payload, session_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, 'PENDING', ?, ?, ?, ?, ?)
             """,
             (
                 action_id,
@@ -144,9 +156,22 @@ def insert_action(
                 json.dumps(args),
                 submitted_by,
                 _utcnow(),
+                hold_mode,
+                json.dumps(rpc_payload) if rpc_payload is not None else None,
+                session_id,
             ),
         )
         conn.commit()
+
+
+def list_expired_async(older_than_seconds: float) -> list[dict[str, Any]]:
+    """PENDING async-mode actions created more than `older_than_seconds` ago."""
+    rows = _query(
+        "SELECT id, tool_name FROM pending_actions WHERE status = 'PENDING' AND hold_mode = 'async' "
+        "AND (julianday('now') - julianday(created_at)) * 86400.0 > ?",
+        (older_than_seconds,),
+    )
+    return [dict(r) for r in rows]
 
 
 def update_action_status(
@@ -216,8 +241,14 @@ def reject_stale_pending(reason: str) -> list[str]:
     return ids
 
 
+# Internal columns never returned by the reviewer API.
+_PRIVATE_COLUMNS = ("rpc_payload", "session_id")
+
+
 def _decode_row(row: sqlite3.Row) -> dict[str, Any]:
     item = dict(row)
+    for col in _PRIVATE_COLUMNS:
+        item.pop(col, None)
     try:
         item["raw_arguments"] = json.loads(item["raw_arguments"])
     except (TypeError, json.JSONDecodeError):

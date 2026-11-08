@@ -268,8 +268,10 @@ def test_restart_rejects_pending_and_agent_gets_error(stack):
     stack.stop_proxy()
     t.join(15)
     resp = box.get("resp")
-    # The agent must get an error (or a dropped connection), never a success.
-    assert resp is None or "result" not in resp.json()
+    # The agent must get an error, a dropped connection, or an empty error
+    # response from the shutting-down server, never a success.
+    if resp is not None and resp.status_code == 200 and resp.content:
+        assert "result" not in resp.json()
 
     stack.start_proxy()
     assert stack.api("GET", "/api/pending", "k-viewer").json() == []
@@ -278,3 +280,67 @@ def test_restart_rejects_pending_and_agent_gets_error(stack):
     # A late approval of the stale action must not run anything
     r = stack.api("POST", "/api/resolve", "k-approver", json={"action_id": action["id"], "decision": "APPROVED"})
     assert r.status_code == 404
+
+
+# --- Hold modes (client timeouts) ---------------------------------------------
+
+
+def test_sse_client_disconnect_withdraws_action(stack):
+    """A wait-mode client that gives up (timeout / Ctrl-C) must not leave an
+    approvable action behind: approving it later would run a call nobody is
+    waiting for."""
+    with (
+        httpx.Client(timeout=10) as c,
+        c.stream(
+            "POST",
+            f"{stack.url}/mcp",
+            json={
+                "jsonrpc": "2.0",
+                "id": 5,
+                "method": "tools/call",
+                "params": {"name": "delete_user", "arguments": {}},
+            },
+            headers={"authorization": "Bearer k-agent", "accept": "application/json, text/event-stream"},
+        ) as r,
+    ):
+        assert r.headers["content-type"].startswith("text/event-stream")
+        action = stack.wait_pending()[0]
+    # connection closed here, before anyone decided
+    for _ in range(100):
+        row = stack.api("GET", "/api/history?limit=5", "k-viewer").json()
+        if any(x["id"] == action["id"] for x in row):
+            break
+        time.sleep(0.05)
+    row = next(x for x in stack.api("GET", "/api/history?limit=5", "k-viewer").json() if x["id"] == action["id"])
+    assert row["status"] == "REJECTED" and "disconnected" in row["rejection_reason"]
+    assert stack.api("GET", "/api/pending", "k-viewer").json() == []
+
+
+def test_async_mode_end_to_end(tmp_path):
+    s = Stack(tmp_path)
+    s.start_upstream()
+    s.start_proxy(ESCROW_HOLD_MODE="async")
+    try:
+        tools = s.rpc("tools/list").json()["result"]["tools"]
+        assert "escrow_get_result" in [t["name"] for t in tools]
+
+        t0 = time.monotonic()
+        held = s.rpc("tools/call", {"name": "delete_user", "arguments": {"id": 3}}).json()
+        assert time.monotonic() - t0 < 2  # answered at once, no client timeout possible
+        action_id = held["result"]["structuredContent"]["action_id"]
+
+        def result():
+            return s.rpc("tools/call", {"name": "escrow_get_result", "arguments": {"action_id": action_id}}).json()
+
+        assert result()["result"]["structuredContent"]["status"] == "PENDING"
+        s.api("POST", "/api/resolve", "k-approver", json={"action_id": action_id, "decision": "APPROVED"})
+        for _ in range(100):
+            out = result()
+            if "escrow_status" in out["result"].get("structuredContent", {}):
+                break
+            time.sleep(0.05)
+        assert "fake upstream ran delete_user" in out["result"]["content"][0]["text"]
+        last = httpx.get(f"{s.upstream_url}/_last").json()
+        assert last["authorization"] == "Bearer upstream-token"
+    finally:
+        s.stop()
