@@ -110,6 +110,31 @@ Tool names are split into words (`get_user`, `get-user` and `getUser` all become
 
 4. Anything else is **held** (fail-safe).
 
+### Argument rules
+
+Tool names aren't enough: `run_sql("SELECT 1")` and `run_sql("DROP TABLE users")` share a name. `argument_rules` in `proxy/policies.yaml` look inside the call's `arguments`:
+
+```yaml
+argument_rules:
+  - name: large-refund
+    action: hold              # hold | allow
+    risk_level: HIGH
+    category: FINANCIAL
+    tools: [refund_payment]   # exact names, and/or tool_pattern: "regex"
+    when:                     # every condition must match
+      amount: {gt: 50}
+```
+
+- **Conditions** are keyed by argument path (`query`, `options.force`, `items.0.id`) or `"*"` (any key or value anywhere; hold rules only). Operators: `regex`, `not_regex`, `equals`, `in`, `gt`, `gte`, `lt`, `lte`, `exists`. String comparisons ignore case and surrounding spaces.
+- **`hold` rules** hold the call and can only *raise* its risk. They beat `always_allow` and `allow` rules. If the argument is present but can't be checked (sent as `"75"`, `[75]`, `"nan"`, a huge string…), the rule still holds, so an agent can't dodge it with odd types.
+- **`allow` rules** auto-approve only when every argument is present with the expected type, and never override `always_hold`. They must name their tools.
+- A missing argument matches neither, except `exists: false`.
+- The rule that decided is shown in the audit log (`detail.rule`).
+- Regexes run on text the agent controls (up to 100,000 characters per value). Avoid patterns that backtrack badly, such as `[^;]*;?\s*\Z` or an unbounded `.*` between two words; use bounded repeats like `{0,500}`. `test_argument_rules.py` times the shipped rules against hostile input.
+- A mistake in the file (unknown key or operator, bad regex, an allow rule without tools) **stops the proxy from starting**, rather than silently skipping the rule.
+
+Shipped rules hold destructive SQL (`DROP`, `DELETE`, … → CRITICAL; `INSERT`, `UPDATE`, … → HIGH) on SQL/query/database tools, and destructive shell commands (`rm -rf`, `curl … | sh`, `mkfs`, `shutdown`, …) on shell/command tools. Commented examples cover auto-approving read-only SQL and refunds under $50. A regex can't prove SQL is harmless, so pair a SELECT allow rule with a read-only database user.
+
 ## API reference
 
 | Method | Path | Role | Description |
@@ -160,6 +185,7 @@ agent-escrow/
 │   ├── routes_ui.py      # Reviewer API, audit export, metrics
 │   ├── auth.py           # API keys and roles
 │   ├── config.py         # Risk classifier
+│   ├── arg_rules.py      # Argument rules (hold/allow on arguments)
 │   ├── policies.yaml     # Classification rules
 │   ├── db.py             # SQLite storage and hash-chained audit log
 │   ├── notifications.py  # Slack, webhook, PagerDuty

@@ -17,7 +17,7 @@ AgentEscrow is a **security product**: it holds risky AI-agent tool calls until 
 
 ## Invariants — never break these
 
-Each one is covered by tests in `test_audit_fixes.py`, `test_hold_modes.py` and `test_e2e.py`. If a change makes one fail, the change is wrong, not the test.
+Each one is covered by tests in `test_audit_fixes.py`, `test_hold_modes.py`, `test_argument_rules.py` and `test_e2e.py`. If a change makes one fail, the change is wrong, not the test.
 
 1. **Listen before showing.** In `proxy/proxy_engine.py` the waiter is registered in `EXECUTION_WAITERS` *before* the action is inserted, broadcast or notified. Nothing slow (HTTP calls, notifications) may run between holding an action and waiting on it. Notifications go through `notifications.schedule(...)` (background), never `await`ed inline.
 2. **The database decides.** `db.update_action_status(...)` only changes a `PENDING` row and returns whether it did; the waiting request reads the final status from the database. Never trust in-memory state alone for a decision.
@@ -27,7 +27,7 @@ Each one is covered by tests in `test_audit_fixes.py`, `test_hold_modes.py` and 
    - Production mode (`ESCROW_MODE=production`) is the default. It must refuse to start without keys and an upstream, and must never return fake/mock results.
    - Unknown tools are **held**, never auto-approved.
    - A new route needs an explicit role dependency (`require_viewer` / `require_approver` / `require_admin` / `require_agent`). `request.state.role` defaults to no privileges.
-6. **Classifier precedence** (`proxy/config.py`): mutation rules can never be bypassed by a read prefix. Names with chaining words (`get_and_delete_x`) are held. Test new rules against both bypass names and false positives.
+6. **Classifier precedence** (`proxy/config.py`): mutation rules can never be bypassed by a read prefix. Names with chaining words (`get_and_delete_x`) are held. Argument rules (`proxy/arg_rules.py`): `hold` rules only ever raise risk and fail closed on odd-typed arguments; `allow` rules need every argument present with the expected type and never override `always_hold`; a policy mistake must refuse to load. Test new rules against both bypass names/arguments and false positives (`test_argument_rules.py`).
 7. **Everything that matters is audited** through `db.insert_audit_log` (hash-chained). Don't write to `audit_log` any other way, and never update or delete audit rows.
 8. **Agent-supplied text is untrusted.** Escape it in Slack/HTML/Markdown (`notifications._slack_escape`, `esc()` in `web/index.html`). Never render it as HTML.
 9. **Hold modes** (`ESCROW_HOLD_MODE`). In `wait` mode a held call runs only inside the request that is waiting for it; if that request is cancelled (client disconnect, shutdown) the action is REJECTED. In `async` mode the approved call runs in the background from the stored request (`execute_approved_async`), and `escrow_get_result` only shows an action to the agent that submitted it (or an admin). Never execute an async action that is not `APPROVED`.
@@ -41,7 +41,7 @@ Each one is covered by tests in `test_audit_fixes.py`, `test_hold_modes.py` and 
 | Hold / wait / execute | `proxy/proxy_engine.py` |
 | Upstream MCP client (Streamable HTTP, SSE) | `proxy/forwarder.py` |
 | Keys and roles | `proxy/auth.py` |
-| Risk classifier + rules | `proxy/config.py`, `proxy/policies.yaml` |
+| Risk classifier + rules | `proxy/config.py`, `proxy/arg_rules.py`, `proxy/policies.yaml` |
 | Storage, audit chain | `proxy/db.py` |
 | Reviewer API, export, metrics route | `proxy/routes_ui.py` |
 | Settings, startup checks | `proxy/settings.py` |

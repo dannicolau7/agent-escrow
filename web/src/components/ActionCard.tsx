@@ -15,6 +15,7 @@ const CATEGORY_COLOR: Record<string, string> = {
   DATABASE:      'text-blue-400',
   FINANCIAL:     'text-amber-400',
   COMMUNICATION: 'text-purple-400',
+  SYSTEM:        'text-red-400',
   GENERIC_WRITE: 'text-gray-400',
   READ:          'text-green-400',
 }

@@ -40,6 +40,81 @@ rules:
       risk_level: MEDIUM
       category: GENERIC_WRITE
 
+# ---------------------------------------------------------------------------
+# Argument rules: decide on what a call DOES, not only its name.
+# Full reference: proxy/arg_rules.py and README "Argument rules".
+#
+#   action: hold   → hold the call and raise risk (never lowers it). Beats
+#                    always_allow and allow rules. If an argument is present
+#                    but can't be checked (wrong type, too long), it HOLDS.
+#   action: allow  → auto-approve, but only if every condition matches with
+#                    the expected types. Never overrides always_hold.
+#
+#   tools: [exact_names]  and/or  tool_pattern: "regex on the tool name"
+#   when:  {argument.path: {operator: value}, ...}  — all must match.
+#          "*" = any key or value anywhere in the arguments (hold rules only).
+#   operators: regex, not_regex, equals, in, gt, gte, lt, lte, exists
+#   String comparisons ignore case and surrounding spaces.
+# ---------------------------------------------------------------------------
+argument_rules:
+  - name: sql-destructive
+    action: hold
+    risk_level: CRITICAL
+    category: DATABASE
+    tool_pattern: "sql|query|database|postgres|mysql|sqlite|(^|[_.-])db([_.-]|$)"
+    when:
+      "*": {regex: "\\b(drop|truncate|delete|alter)\\b"}
+
+  - name: sql-write
+    action: hold
+    risk_level: HIGH
+    category: DATABASE
+    tool_pattern: "sql|query|database|postgres|mysql|sqlite|(^|[_.-])db([_.-]|$)"
+    when:
+      "*": {regex: "\\b(insert|update|merge|upsert|replace|create|grant|revoke|rename|copy|call|exec|execute|lock|vacuum|into)\\b"}
+
+  - name: shell-destructive
+    action: hold
+    risk_level: CRITICAL
+    category: SYSTEM
+    tool_pattern: "shell|command|bash|terminal|exec|cmd|ssh"
+    when:
+      "*": {regex: "\\brm\\s+-\\w*[rf]|\\bmkfs|\\bdd\\s+if=|\\b(shutdown|reboot|halt)\\b|\\bchmod\\s+-R\\b|>\\s*/dev/(sd|nvme|disk)|\\b(curl|wget)\\b[^|\\n]{0,500}\\|\\s*(ba|z)?sh\\b|:\\(\\)\\s*\\{"}
+
+  # --- Examples (uncomment and adapt) -------------------------------------
+  #
+  # Auto-approve read-only SQL on one tool. Prefer a read-only database
+  # user as well: a regex can't prove a query is harmless.
+  # - name: sql-select-only
+  #   action: allow
+  #   tools: [run_sql]
+  #   when:
+  #     query:
+  #       regex: "^\\s*(select|with|explain)\\b[^;]*;?\\Z"
+  #       not_regex: "\\b(insert|update|delete|drop|alter|truncate|create|grant|revoke|merge|call|exec|execute|into|copy|lock|set|pg_\\w+|lo_\\w+|dblink\\w*|load_file|outfile|sleep|benchmark)\\b"
+  #
+  # Refunds: auto-approve up to $50, hold bigger ones as HIGH.
+  # - name: small-refund
+  #   action: allow
+  #   tools: [refund_payment]
+  #   when:
+  #     amount: {lte: 50}
+  #     currency: {in: [usd]}
+  # - name: large-refund
+  #   action: hold
+  #   risk_level: HIGH
+  #   category: FINANCIAL
+  #   tools: [refund_payment]
+  #   when:
+  #     amount: {gt: 50}
+  #
+  # Anything touching production is at least HIGH.
+  # - name: production-env
+  #   action: hold
+  #   risk_level: HIGH
+  #   when:
+  #     environment: {in: [prod, production]}
+
 # Named tools that always require human approval, regardless of rules.
 always_hold:
   - execute_code

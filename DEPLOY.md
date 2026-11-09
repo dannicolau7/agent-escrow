@@ -42,6 +42,10 @@ Client request timeouts matter: many clients give up after ~60 s, but a review c
 
 The upstream must speak MCP over Streamable HTTP. Servers that only support stdio need an HTTP bridge in front of them (for example `mcp-proxy` / `supergateway`).
 
+## Policies
+
+Rules live in `proxy/policies.yaml` and are baked into the image. To change them, edit the file and rebuild (`docker compose up -d --build`), or mount your own file over `/app/proxy/policies.yaml`. Policies are read at startup: an invalid file (unknown key or operator, bad regex, an `allow` argument rule without `tools`) makes the proxy refuse to start, and the error names the rule. See README → "Argument rules".
+
 ## Operational limits — read before going to production
 
 - **Single instance only.** Held calls wait inside the proxy process, and on startup the proxy rejects every action still marked pending. Run one container with one worker. Scaling out needs a shared store and cross-instance signalling (Postgres `LISTEN/NOTIFY` or Redis), which is not built yet.

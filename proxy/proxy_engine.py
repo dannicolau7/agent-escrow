@@ -113,14 +113,15 @@ async def process_mcp_call(
     reason = tool_args.get("reason") if isinstance(tool_args.get("reason"), str) else None
     reason = reason or "No justification provided by agent."
 
-    classification = classify_tool_call(tool_name)
+    classification = classify_tool_call(tool_name, tool_args)
+    matched_rule = {"rule": classification["rule"]} if "rule" in classification else {}
 
     if classification["action"] == "AUTO_APPROVE":
         db.insert_audit_log(
             "action.auto_approved",
             actor=submitted_by,
             ip_address=ip_address,
-            detail={"tool_name": tool_name, "arguments": tool_args},
+            detail={"tool_name": tool_name, "arguments": tool_args, **matched_rule},
         )
         return await _execute(None, payload, forward_headers, tool_name, submitted_by, ip_address)
 
@@ -157,6 +158,7 @@ async def process_mcp_call(
                 "risk_level": classification["risk_level"],
                 "category": classification["category"],
                 "hold_mode": hold_mode,
+                **matched_rule,
             },
         )
         log.info(
