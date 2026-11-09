@@ -175,7 +175,7 @@ async def handle_mcp(request: Request):
     if (
         settings.hold_mode() == "wait"
         and "text/event-stream" in request.headers.get("accept", "")
-        and classify_tool_call(params["name"])["action"] == "HOLD"
+        and classify_tool_call(params["name"], args)["action"] == "HOLD"
     ):
         meta = params.get("_meta")
         token = meta.get("progressToken") if isinstance(meta, dict) else None

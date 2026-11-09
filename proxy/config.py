@@ -6,10 +6,15 @@ from typing import Any
 
 import yaml
 
+from .arg_rules import RISK_ORDER, ArgRule, PolicyError, compile_rules, rule_matches
+
 POLICY_PATH = Path(__file__).parent / "policies.yaml"
 
 # Loaded once at import time; call load_policy() to force a reload (e.g. tests).
 _POLICIES: dict[str, Any] = {}
+_ARG_RULES: list[ArgRule] = []
+
+__all__ = ["PolicyError", "classify_tool_call", "load_policy", "tokenize"]
 
 # Words that chain a second operation onto a read ("get_and_delete_user").
 # A tool name containing one of these is never auto-approved.
@@ -18,9 +23,12 @@ _DEFAULT_CHAIN_WORDS = ("and", "then", "or", "also", "plus")
 
 def load_policy() -> dict[str, Any]:
     """Read policies.yaml and cache the result.  Safe to call multiple times."""
-    global _POLICIES
+    global _POLICIES, _ARG_RULES
     with open(POLICY_PATH, encoding="utf-8") as fh:
-        _POLICIES = yaml.safe_load(fh) or {}
+        policies = yaml.safe_load(fh) or {}
+    # Validate before swapping in, so a broken file never half-applies.
+    arg_rules = compile_rules(policies.get("argument_rules"))
+    _POLICIES, _ARG_RULES = policies, arg_rules
     return _POLICIES
 
 
@@ -52,7 +60,14 @@ def _read_verbs(rules: dict[str, Any]) -> list[str]:
 # ---------------------------------------------------------------------------
 # Classification
 # ---------------------------------------------------------------------------
-# Precedence (highest → lowest):
+# Argument rules (proxy/arg_rules.py) wrap the name-based steps below:
+#   A. `allow` argument rule matches (and the name isn't in always_hold)
+#      → AUTO_APPROVE/LOW/READ, skipping steps 2–5.
+#   B. Any `hold` argument rule matches → HOLD, at the highest risk of the
+#      matching rules and the name-based result.  Hold rules beat allow
+#      rules and always_allow; they can only raise risk, never lower it.
+#
+# Name-based precedence (highest → lowest):
 #   1. always_hold list   → HOLD/MEDIUM/GENERIC_WRITE
 #   2. always_allow list  → AUTO_APPROVE/LOW/READ
 #   3. Read verb as the FIRST word and no chaining word ("and", "then", …)
@@ -65,8 +80,34 @@ def _read_verbs(rules: dict[str, Any]) -> list[str]:
 # ---------------------------------------------------------------------------
 
 
-def classify_tool_call(tool_name: str) -> dict[str, str]:
-    """Return {"action", "risk_level", "category"} for a tool name."""
+def classify_tool_call(tool_name: str, arguments: Any = None) -> dict[str, str]:
+    """Return {"action", "risk_level", "category"} (and "rule" when an
+    argument rule decided) for a tool call."""
+    p = _policies()
+    args = arguments if arguments is not None else {}
+
+    if tool_name in p.get("always_hold", []):
+        result = {"action": "HOLD", "risk_level": "MEDIUM", "category": "GENERIC_WRITE"}
+    else:
+        allow = next((r for r in _ARG_RULES if r.action == "allow" and rule_matches(r, tool_name, args)), None)
+        if allow is not None:
+            result = {"action": "AUTO_APPROVE", "risk_level": allow.risk_level, "category": allow.category}
+            result["rule"] = allow.name
+        else:
+            result = _classify_name(tool_name)
+
+    for rule in _ARG_RULES:
+        if rule.action == "hold" and rule_matches(rule, tool_name, args):
+            current = RISK_ORDER.get(result["risk_level"], 1) if result["action"] == "HOLD" else -1
+            if RISK_ORDER[rule.risk_level] > current:
+                result = {"action": "HOLD", "risk_level": rule.risk_level, "category": rule.category, "rule": rule.name}
+            elif RISK_ORDER[rule.risk_level] == current and "rule" not in result:
+                result["rule"] = rule.name  # same risk: still tell the reviewer why
+    return result
+
+
+def _classify_name(tool_name: str) -> dict[str, str]:
+    """Name-only classification (steps 1–5)."""
     p = _policies()
     rules = p.get("rules", {})
     words = tokenize(tool_name)
