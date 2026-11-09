@@ -1,10 +1,11 @@
 # AgentEscrow — Roadmap & Tracking
 
-_Last updated: 2026-11-08 (evening)_
+_Last updated: 2026-11-08 (night)_
 
 ## Now
 
 - [x] **Merge [PR #1](https://github.com/dannicolau7/agent-escrow/pull/1)** — audit fixes, merged.
+- [x] **Merge [PR #3](https://github.com/dannicolau7/agent-escrow/pull/3)** (dev quick fixes) and **[PR #4](https://github.com/dannicolau7/agent-escrow/pull/4)** (client timeouts), merged.
 - [x] **Merge [PR #2](https://github.com/dannicolau7/agent-escrow/pull/2)** — AGENTS.md rules, `make dev`/`make demo`, end-to-end tests, lint/type CI, graceful-shutdown fix, merged.
 - [ ] **Sync the VS Code agent:** have it pull `main` and run `make install` before building anything else. That's how it picks up `AGENTS.md`.
 - [ ] **Protect `main` on GitHub** (repo settings): require a PR with passing CI. Only the repo owner can do this.
@@ -14,16 +15,39 @@ _Last updated: 2026-11-08 (evening)_
 
 So far everything is verified only by tests and a fake MCP server. Put the proxy between a real client (Claude Code / Claude Desktop) and a real MCP server (e.g. GitHub, a database) and run an actual task.
 
-- [ ] **Client timeouts** _(fix in progress: progress heartbeats + async hold mode)_. Most MCP clients give up after ~60 s, but a human review can take up to `ESCROW_HOLD_TIMEOUT` (300 s). If the client gives up first, the agent fails even when someone approves. This is the problem most likely to break a demo. The fix may change the design (e.g. return "held, check back" instead of keeping the request open).
-- [ ] **stdio servers.** Most popular MCP servers only speak stdio. Confirm an HTTP bridge (`mcp-proxy` / `supergateway`) works smoothly.
+- [x] **Client timeouts** _(fixed in PR #4: `ESCROW_HOLD_MODE=wait` sends progress heartbeats, `async` answers "held, check back" plus the `escrow_get_result` tool; a live 70 s review passed in both modes. Still to try with Claude Desktop / Claude Code)_.
+- [ ] **stdio servers.** Most popular MCP servers only speak stdio. Confirm an HTTP bridge (`mcp-proxy` / `supergateway`) works smoothly in front of the upstream (the client side is item 4 below).
 - [ ] **Risk levels.** Check that the classifier's choices feel right on real tool names; tune `proxy/policies.yaml`.
 
-## Build order after that
+## Build order: gaps found on 2026-11-08 (work top to bottom, one PR each)
 
-1. [ ] **#7 Per-agent / per-environment policies** + **#8 conditional rules** (e.g. auto-approve refunds under $50, rate limits per agent). This is what buyers see in a demo, and without it reviewers drown in approvals.
-2. [ ] **#6 Claims, assignment, escalation, SLA timers.** Needed as soon as there's more than one reviewer; pairs with the Slack notifications.
-3. [ ] **#10 Agent SDK** (Python/Node `EscrowClient`). Small; makes onboarding a pilot customer a 5-minute job.
-4. [ ] **#9 Postgres + cross-instance signalling** (Postgres `LISTEN/NOTIFY` or Redis). Biggest job; only needed when one instance isn't enough.
+Agreed with the owner: build these in this order. Items #7/#8, #6 and #10 from the original list are folded in where they fit.
+
+### Pilot blockers
+1. [ ] **Rules on arguments, not just tool names** (covers #8). Today `run_sql("SELECT …")` and `run_sql("DROP TABLE …")` get the same decision. Policies need argument matchers (e.g. hold SQL that isn't a `SELECT`, hold shell commands containing `rm`, hold refunds over $50) that can raise risk or auto-approve, and must fail closed on missing or odd-typed arguments.
+2. [ ] **Approve / reject from Slack.** Interactive buttons, verified with Slack's signing secret, mapped to an approver key; same conditional update and audit as `/api/resolve`. Also covers most of the phone use case (#17).
+3. [ ] **Several MCP servers behind one escrow.** Route by tool-name prefix (`github__create_issue`), merge `tools/list`, per-upstream tokens.
+4. [ ] **`agent-escrow connect` stdio bridge.** A small command that Claude Desktop / Code launch as a local MCP server and that forwards to the proxy. Replaces the separate stdio item above.
+5. [ ] **Better review context + edit before approve.** Show the agent's stated task and a plain-English summary; let a reviewer change arguments before approving, with the original and edited versions in the audit log.
+
+### Security differentiators
+6. [ ] **Tool-definition pinning.** Record each tool's name, description and schema the first time it's seen; if it changes later, hold calls to it and alert (protects against tool poisoning / "rug pulls").
+7. [ ] **Two-person approval for CRITICAL** and no approving your own agent's actions (separation of duties).
+8. [ ] **Kill switch.** Pause one agent or all agents at once; calls made while paused are held or refused.
+9. [ ] **Hide secrets in stored arguments.** Mask tokens, passwords and keys in the database, dashboard, Slack and exports.
+10. [ ] **Keys managed in the database.** Hashed keys with an admin API/page; rotate and revoke without a restart (restarts reject pending actions today).
+
+### Cutting approval overload
+11. [ ] **Temporary approvals:** "allow `create_issue` from this agent for 1 hour", audited, with expiry. Pairs with **#7 per-agent / per-environment policies**.
+12. [ ] **Policy test / replay:** run last week's calls against a new policy and show what would have changed before switching it on.
+
+### Selling pilots
+13. [ ] **Landing page, 2-minute demo video, and a GitHub MCP setup guide.**
+
+### After that
+- [ ] **#6 Claims, assignment, escalation, SLA timers** (needed once there's more than one reviewer).
+- [ ] **#10 Agent SDK** (Python/Node `EscrowClient`).
+- [ ] **#9 Postgres + cross-instance signalling.** Biggest job; only when one instance isn't enough.
 
 **Wait until a customer asks:** SSO, mobile app (#17), LLM risk scoring (#15), Git policy sync (#16), integrations marketplace (#18).
 
