@@ -101,6 +101,23 @@ async def test_notification_gets_202(client):
     assert r.status_code == 202
 
 
+async def test_made_up_notification_is_refused_not_forwarded(client, monkeypatch):
+    """Regression: any method starting with "notifications/" used to be forwarded."""
+    monkeypatch.setenv("MCP_UPSTREAM_URL", "http://upstream.test/mcp")
+    called = []
+    forwarder_module._test_transport = httpx.MockTransport(lambda r: called.append(1) or httpx.Response(200, json={}))
+    for method in ("notifications/tools/call", "notifications/delete_everything", "notifications/"):
+        body = {"jsonrpc": "2.0", "method": method, "params": {"name": "delete_user", "arguments": {"id": 1}}}
+        r = await client.post("/mcp", json=body)
+        assert r.json()["error"]["code"] == -32601, method
+    assert not called
+    assert len(db.get_audit_log(event_type="rpc.refused")) == 3
+
+    for method in ("notifications/initialized", "notifications/cancelled", "notifications/progress"):
+        await client.post("/mcp", json={"jsonrpc": "2.0", "method": method})
+    assert len(called) == 3
+
+
 # --- 4. Production mode never fails open -----------------------------------------
 
 
