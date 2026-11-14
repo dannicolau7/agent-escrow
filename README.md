@@ -172,3 +172,7 @@ agent-escrow/
 ├── Dockerfile, docker-compose.yml, .env.example, DEPLOY.md
 └── test_*.py
 ```
+
+## License
+
+Apache License 2.0. See [LICENSE](LICENSE).
