@@ -180,6 +180,63 @@ def test_classifier_reads_not_held(name):
     assert classify_tool_call(name)["action"] == "AUTO_APPROVE", name
 
 
+@pytest.mark.parametrize(
+    "name",
+    [
+        "get_secret",
+        "read_env",
+        "get_credentials",
+        "list_api_keys",
+        "get_shell_output",
+        "get_user_impersonate",
+        "get_config_set",
+        "read_file_write_file",
+        "read_exec",
+        "list_grant_admin",
+        "get_cancel",
+        "read_put",
+        "get_patch",
+    ],
+)
+def test_sensitive_reads_and_writes_behind_a_read_verb_are_held(name):
+    """Regression: these all started with a read verb and ran without review."""
+    assert classify_tool_call(name)["action"] == "HOLD", name
+
+
+def test_listed_mode_ignores_tool_names(monkeypatch):
+    monkeypatch.setenv("ESCROW_AUTO_APPROVE", "listed")
+    for name in ("get_user", "list_orders", "read_email", "describe-table", "search"):
+        assert classify_tool_call(name)["action"] == "HOLD", name
+    # Only the explicit allow list runs without a person; the hold list still wins.
+    assert classify_tool_call("web_search")["action"] == "AUTO_APPROVE"
+    assert classify_tool_call("git_status")["action"] == "AUTO_APPROVE"
+    assert classify_tool_call("execute_code")["action"] == "HOLD"
+    assert classify_tool_call("delete_user")["risk_level"] == "CRITICAL"
+
+    monkeypatch.setenv("ESCROW_AUTO_APPROVE", "verbs")
+    assert classify_tool_call("get_user")["action"] == "AUTO_APPROVE"
+    monkeypatch.delenv("ESCROW_AUTO_APPROVE")
+    assert classify_tool_call("get_user")["action"] == "AUTO_APPROVE"
+
+
+def test_unknown_auto_approve_mode_holds_and_stops_startup(monkeypatch):
+    from proxy import settings
+
+    monkeypatch.setenv("ESCROW_AUTO_APPROVE", "everything")
+    assert classify_tool_call("get_user")["action"] == "HOLD"  # when in doubt, hold
+    with pytest.raises(settings.ConfigError, match="ESCROW_AUTO_APPROVE"):
+        settings.validate_startup()
+
+
+async def test_listed_mode_holds_a_read_end_to_end(client, monkeypatch):
+    monkeypatch.setenv("ESCROW_AUTO_APPROVE", "listed")
+    task = asyncio.create_task(client.post("/mcp", json=_call("get_user", {"id": 1})))
+    rows = await _wait_for_pending(client)
+    assert rows[0]["tool_name"] == "get_user"
+    await client.post("/api/resolve", json={"action_id": rows[0]["id"], "decision": "REJECTED"})
+    assert "error" in (await task).json()
+
+
 def test_classifier_risk_levels():
     assert classify_tool_call("charge_card")["risk_level"] == "HIGH"
     assert classify_tool_call("git_push")["category"] == "GENERIC_WRITE"

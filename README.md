@@ -78,6 +78,7 @@ See **[DEPLOY.md](DEPLOY.md)** for Docker Compose, HTTPS, Fly.io and the operati
 | `ESCROW_HOLD_MODE` | `wait` (default): keep the agent's request open until a human decides. `async`: answer at once with "held as act_…"; the agent calls the `escrow_get_result` tool for the outcome. See [Client timeouts](#client-timeouts) |
 | `ESCROW_HEARTBEAT_SECONDS` | Wait mode: interval of progress heartbeats on streamed responses (default 15) |
 | `ESCROW_CORS_ORIGINS` | Comma-separated browser origins allowed to call the API (default: same origin; `localhost:3000` in dev) |
+| `ESCROW_AUTO_APPROVE` | `verbs` (default): tools on `always_allow`, or whose name starts with a read verb, run without review. `listed`: only tools on `always_allow` do; everything else is held. Use `listed` in production |
 | `ESCROW_AUDIT_KEY` | Secret for the audit hash chain. Stops someone with database access rebuilding it, but the log can then only be checked by someone who holds the secret |
 | `ESCROW_AUDIT_SIGNING_KEY` | Path to an Ed25519 private key for signed audit checkpoints, which an outsider can check with the public key |
 | `ESCROW_LOG_LEVEL` | JSON log level (default `INFO`) |
@@ -99,7 +100,7 @@ Send keys as `Authorization: Bearer <key>` or `X-Api-Key: <key>`. `?api_key=` is
 Tool names are split into words (`get_user`, `get-user` and `getUser` all become `get user`). Rules in `proxy/policies.yaml`, highest precedence first:
 
 1. `always_hold` / `always_allow` — exact tool names.
-2. **Read verb first** (`get`, `list`, `search`, `read`, `describe`) and no chaining word (`and`, `then`, `or`, …) → auto-approved, unless a destructive word appears (`get_user_delete` is held).
+2. **Read verb first** (`get`, `list`, `search`, `read`, `describe`) and no chaining word (`and`, `then`, `or`, …) → auto-approved, unless a destructive word appears (`get_user_delete` is held). Names that hand over secrets or a shell (`get_secret`, `list_api_keys`, `read_env`) and names with a state-changing word after the verb (`get_config_set`, `read_exec`) are held too. With `ESCROW_AUTO_APPROVE=listed` this step is skipped: only `always_allow` runs without review, because a name is not proof of what a tool does.
 3. Mutation word lists, first match wins:
 
 | Risk | Example words | Category |

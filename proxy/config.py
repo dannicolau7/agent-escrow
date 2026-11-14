@@ -6,6 +6,8 @@ from typing import Any
 
 import yaml
 
+from . import settings
+
 POLICY_PATH = Path(__file__).parent / "policies.yaml"
 
 # Loaded once at import time; call load_policy() to force a reload (e.g. tests).
@@ -99,8 +101,11 @@ def classify_tool_call(tool_name: str) -> dict[str, str]:
     # 3. Read verb first, with nothing chained after it.  Only rules marked
     #    `override_read: true` (destructive words) can still hold it, so
     #    "get_user_delete" is held but "read_email" / "get_post" are not.
+    #    Skipped entirely when ESCROW_AUTO_APPROVE=listed: then only `always_allow` runs
+    #    without a person, and a tool's name is never taken as proof of what it does.
     chain_words = set(rules.get("chain_words", _DEFAULT_CHAIN_WORDS))
-    if words and words[0] in _read_verbs(rules) and not (chain_words & word_set):
+    reads_by_name = settings.auto_approve_mode() == "verbs"
+    if reads_by_name and words and words[0] in _read_verbs(rules) and not (chain_words & word_set):
         for rule in mutations:
             if rule.get("override_read") and _matches(rule):
                 return _hold(rule)
