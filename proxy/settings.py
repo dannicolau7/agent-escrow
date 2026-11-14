@@ -70,6 +70,14 @@ class ConfigError(RuntimeError):
 
 def validate_startup() -> None:
     """Fail fast on unsafe production configuration."""
+    from . import checkpoint  # local import to avoid a cycle
+
+    # In every mode: a configured signing key that cannot be loaded is a mistake to fix now,
+    # not when an auditor asks for a checkpoint.
+    try:
+        checkpoint.validate_startup()
+    except checkpoint.CheckpointError as exc:
+        raise ConfigError(f"Refusing to start: {exc}.") from exc
     if is_dev():
         return
     from .auth import load_keys  # local import to avoid a cycle

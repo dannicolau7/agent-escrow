@@ -78,7 +78,8 @@ See **[DEPLOY.md](DEPLOY.md)** for Docker Compose, HTTPS, Fly.io and the operati
 | `ESCROW_HOLD_MODE` | `wait` (default): keep the agent's request open until a human decides. `async`: answer at once with "held as act_…"; the agent calls the `escrow_get_result` tool for the outcome. See [Client timeouts](#client-timeouts) |
 | `ESCROW_HEARTBEAT_SECONDS` | Wait mode: interval of progress heartbeats on streamed responses (default 15) |
 | `ESCROW_CORS_ORIGINS` | Comma-separated browser origins allowed to call the API (default: same origin; `localhost:3000` in dev) |
-| `ESCROW_AUDIT_KEY` | Secret for signing the audit hash chain (recommended) |
+| `ESCROW_AUDIT_KEY` | Secret for the audit hash chain. Stops someone with database access rebuilding it, but the log can then only be checked by someone who holds the secret |
+| `ESCROW_AUDIT_SIGNING_KEY` | Path to an Ed25519 private key for signed audit checkpoints, which an outsider can check with the public key |
 | `ESCROW_LOG_LEVEL` | JSON log level (default `INFO`) |
 | `DASHBOARD_URL`, `SLACK_WEBHOOK_URL`, `NOTIFICATION_WEBHOOK_URL`, `PAGERDUTY_ROUTING_KEY` | Notifications |
 
@@ -122,6 +123,7 @@ Tool names are split into words (`get_user`, `get-user` and `getUser` all become
 | `GET` | `/api/audit` | viewer | Audit log (filter by `action_id`, `event_type`) |
 | `GET` | `/api/audit/export?format=csv\|jsonl&since=&until=` | admin | Download the audit log with hashes |
 | `GET` | `/api/audit/verify` | admin | Recompute the audit hash chain |
+| `GET` | `/api/audit/checkpoint` | admin | Signed checkpoint of the audit log (needs `ESCROW_AUDIT_SIGNING_KEY`) |
 | `GET` | `/metrics` | viewer | Prometheus metrics |
 | `GET` | `/health` | public | Liveness check |
 | `GET` | `/docs` | public | Swagger UI |
@@ -138,6 +140,21 @@ Use `async` when your client's request timeout is shorter than your reviewers' t
 ## Audit log
 
 Every hold, decision, timeout, auto-approved call, forwarded read, refused method and execution outcome is written to `audit_log`. Rows are hash-chained (HMAC-SHA256 with `ESCROW_AUDIT_KEY`), so editing or deleting a row is detected by `/api/audit/verify`. Without `ESCROW_AUDIT_KEY` the chain still detects edits, but someone with database access could rebuild it.
+
+### Signed checkpoints
+
+A checkpoint is the hash of the latest audit row, signed with a key only this server holds. Anyone with the public key can check it; nobody can forge one.
+
+```bash
+python -m proxy.checkpoint keygen audit-signing.key     # writes the key (owner-only) and audit-signing.key.pub
+export ESCROW_AUDIT_SIGNING_KEY=audit-signing.key
+curl -H "X-Api-Key: $ADMIN_KEY" http://127.0.0.1:4000/api/audit/checkpoint
+```
+
+- Give the `.pub` file to whoever checks your log, and confirm its fingerprint with them over a second channel.
+- **Hand checkpoints to someone outside, regularly.** A checkpoint proves what the server vouched for when it signed. Once it is held outside, the log cannot be rewritten before that point without the mismatch showing: a later export must still contain that row with that hash.
+- For a log an outsider can check row by row, leave `ESCROW_AUDIT_KEY` unset and rely on checkpoints. With both set, the checkpoint is still valid but the rows can only be re-checked by someone holding the secret; the checkpoint's `keyed_chain` field says which applies.
+- Issuing a checkpoint needs an admin key and is itself written to the audit log.
 
 ## Reviewer dashboard
 

@@ -30,6 +30,8 @@ Set `DASHBOARD_URL` to the public `https://…/ui/` address so notification link
 fly launch --no-deploy                     # uses the Dockerfile
 fly volumes create escrow_data --size 1
 fly secrets set ESCROW_KEYS='…' MCP_UPSTREAM_URL='…' MCP_UPSTREAM_TOKEN='…' ESCROW_AUDIT_KEY='…'
+# Optional signed audit checkpoints: mount an Ed25519 key as a file and set
+# ESCROW_AUDIT_SIGNING_KEY to its path (see "Signed checkpoints" in README.md).
 ```
 
 In `fly.toml` mount the volume at `/data`, set `internal_port = 4000`, and **keep exactly one machine** (`fly scale count 1`), because of the single-instance limit below. Fly terminates TLS for you.

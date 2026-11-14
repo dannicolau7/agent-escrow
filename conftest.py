@@ -13,5 +13,6 @@ for var in (
     "PAGERDUTY_ROUTING_KEY",
     "ESCROW_CORS_ORIGINS",
     "ESCROW_AUDIT_KEY",
+    "ESCROW_AUDIT_SIGNING_KEY",
 ):
     os.environ.pop(var, None)
