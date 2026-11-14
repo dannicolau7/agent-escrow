@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import PlainTextResponse, Response, StreamingResponse
 from pydantic import BaseModel
 
+from . import checkpoint as _checkpoint
 from . import db
 from . import metrics as _metrics
 from .auth import require_admin, require_approver, require_viewer
@@ -140,6 +141,29 @@ def export_audit(
         media_type="text/csv",
         headers={"Content-Disposition": 'attachment; filename="escrow-audit.csv"'},
     )
+
+
+@router.get("/api/audit/checkpoint", dependencies=[Depends(require_admin)])
+def audit_checkpoint(request: Request):
+    """Sign the current head of the audit chain with the server's Ed25519 key.
+
+    Hand the result to someone outside (an auditor, the system owner). It commits this
+    server to the log as it stands now: a later export must still contain this row and hash.
+    """
+    db.ensure_db()
+    if _checkpoint.signing_key_path() is None:
+        raise HTTPException(status_code=409, detail="No audit signing key is configured (ESCROW_AUDIT_SIGNING_KEY)")
+    # Recorded first, so the checkpoint covers the record of its own issue.
+    db.insert_audit_log(
+        "audit.checkpoint_issued",
+        actor=getattr(request.state, "key_label", None) or "unknown",
+        ip_address=request.client.host if request.client else None,
+    )
+    try:
+        return _checkpoint.issue(db.audit_head())
+    except _checkpoint.CheckpointError as exc:
+        log.error("audit.checkpoint_failed", extra={"reason": str(exc)})
+        raise HTTPException(status_code=500, detail="The audit checkpoint could not be signed") from exc
 
 
 @router.get("/api/audit/verify", dependencies=[Depends(require_admin)])
