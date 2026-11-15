@@ -26,6 +26,11 @@ Fail-closed semantics
   ``"amount": "75"`` or ``"amount": [75]``.
 * An **allow** rule matches only when every argument is present and has the
   expected type.  Anything odd → no match → normal (usually holding) rules.
+  It vouches for the whole call, so it is strict: exact ``tools`` only (a
+  pattern for "refund" would also match "refund_and_delete_account"); numeric
+  comparisons take real numbers, never text such as ``"49"``; ``lt``/``lte``
+  needs a lower bound, or ``-5000`` would pass; and an argument with no
+  condition that is not listed in ``other_args`` means no match.
 * A missing argument never matches either kind, except via ``exists: false``.
 * String comparisons ignore case and surrounding whitespace.
 * Policy mistakes (unknown keys, bad regex, allow rule without a tool
@@ -44,7 +49,7 @@ MAX_VALUE_CHARS = 100_000  # longer strings are "uncheckable"
 RISK_ORDER = {"LOW": 0, "MEDIUM": 1, "HIGH": 2, "CRITICAL": 3}
 
 _OPS = {"regex", "not_regex", "equals", "in", "gt", "gte", "lt", "lte", "exists"}
-_RULE_KEYS = {"name", "action", "risk_level", "category", "tools", "tool_pattern", "when"}
+_RULE_KEYS = {"name", "action", "risk_level", "category", "tools", "tool_pattern", "when", "other_args"}
 _MISSING = object()
 
 
@@ -72,6 +77,8 @@ class ArgRule:
     tools: frozenset[str]
     tool_pattern: re.Pattern[str] | None
     conditions: list[Condition]
+    # Allow rules only: argument names that may be present without a condition.
+    other_args: frozenset[str] = frozenset()
 
     def applies_to(self, tool_name: str) -> bool:
         if not self.tools and self.tool_pattern is None:
@@ -121,8 +128,16 @@ def compile_rules(raw: Any) -> list[ArgRule]:
         if not isinstance(tools, list) or not all(isinstance(t, str) for t in tools):
             raise PolicyError(f"{where}: tools must be a list of tool names")
         tool_pattern = _compile(item["tool_pattern"], where) if item.get("tool_pattern") is not None else None
-        if action == "allow" and not tools and tool_pattern is None:
-            raise PolicyError(f"{where}: an allow rule must name its tools (tools or tool_pattern)")
+        if action == "allow" and tool_pattern is not None:
+            # A pattern for "refund" also matches "refund_and_delete_account".
+            raise PolicyError(f"{where}: an allow rule must list exact tool names in `tools`, not a tool_pattern")
+        if action == "allow" and not tools:
+            raise PolicyError(f"{where}: an allow rule must name its tools (tools)")
+        other_args = item.get("other_args") or []
+        if not isinstance(other_args, list) or not all(isinstance(a, str) for a in other_args):
+            raise PolicyError(f"{where}: other_args must be a list of argument names")
+        if other_args and action != "allow":
+            raise PolicyError(f"{where}: other_args only applies to allow rules")
 
         when = item.get("when")
         if not isinstance(when, dict) or not when:
@@ -147,10 +162,15 @@ def compile_rules(raw: Any) -> list[ArgRule]:
                 raise PolicyError(f"{cwhere}: in needs a list")
             if "exists" in ops and not isinstance(ops["exists"], bool):
                 raise PolicyError(f"{cwhere}: exists needs true or false")
+            if action == "allow" and {"lt", "lte"} & set(ops) and not {"gt", "gte"} & set(ops):
+                # "amount < 50" alone also allows -5000.
+                raise PolicyError(f"{cwhere}: an allow rule with lt/lte needs a lower bound too (gt or gte)")
             regexes = {op: _compile(ops[op], f"{cwhere}.{op}") for op in ("regex", "not_regex") if op in ops}
             conditions.append(Condition(str(path), dict(ops), regexes))
 
-        rules.append(ArgRule(name, action, risk, category, frozenset(tools), tool_pattern, conditions))
+        rules.append(
+            ArgRule(name, action, risk, category, frozenset(tools), tool_pattern, conditions, frozenset(other_args))
+        )
     return rules
 
 
@@ -187,9 +207,13 @@ def _as_text(v: Any) -> str:
     raise _Unchecked
 
 
-def _as_number(v: Any) -> float:
+def _as_number(v: Any, strict: bool = False) -> float:
     if _is_number(v):
         n = float(v)
+    elif strict:
+        # Allow rules take real numbers only. "49", " 4e1 " and non-ASCII digits all parse
+        # here, and the upstream may read the same text as a different amount.
+        raise _Unchecked
     elif isinstance(v, str) and len(v) <= 64:
         try:
             n = float(v.strip())
@@ -214,7 +238,7 @@ def _same(a: Any, b: Any) -> bool:
     return type(a) is type(b) and a == b
 
 
-def _check_value(cond: Condition, value: Any) -> bool:
+def _check_value(cond: Condition, value: Any, strict: bool = False) -> bool:
     """Evaluate every operator of one condition.  Raises _Unchecked."""
     for op, expected in cond.ops.items():
         if op == "exists":
@@ -232,7 +256,7 @@ def _check_value(cond: Condition, value: Any) -> bool:
                 raise _Unchecked
             ok = any(_same(value, e) for e in expected)
         else:
-            n = _as_number(value)
+            n = _as_number(value, strict)
             ok = {"gt": n > expected, "gte": n >= expected, "lt": n < expected, "lte": n <= expected}[op]
         if not ok:
             return False
@@ -267,10 +291,20 @@ def _condition_matches(rule: ArgRule, cond: Condition, args: Any) -> bool:
     if cond.ops.get("exists") is False:
         return False
     try:
-        return _check_value(cond, value)
+        return _check_value(cond, value, strict=not hold)
     except _Unchecked:
         return hold  # hold rules fail closed, allow rules don't match
 
 
 def rule_matches(rule: ArgRule, tool_name: str, args: Any) -> bool:
-    return rule.applies_to(tool_name) and all(_condition_matches(rule, c, args) for c in rule.conditions)
+    if not rule.applies_to(tool_name):
+        return False
+    if rule.action == "allow":
+        # An allow rule vouches for the whole call, so every argument has to be one it
+        # checks or one it was told to expect. An extra "to_account" means no match.
+        if not isinstance(args, dict):
+            return False
+        checked = {c.path.split(".")[0] for c in rule.conditions}
+        if set(args) - checked - rule.other_args:
+            return False
+    return all(_condition_matches(rule, c, args) for c in rule.conditions)

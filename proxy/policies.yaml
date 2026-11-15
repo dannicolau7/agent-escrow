@@ -27,6 +27,18 @@ rules:
       risk_level: CRITICAL
       category: DATABASE
       override_read: true
+    # Reads that hand over secrets or a shell, and words that act for someone else.  A name
+    # that starts with a read verb is still held ("get_secret", "list_api_keys", "read_env").
+    - words: [secret, secrets, credential, credentials, password, passwords, token, tokens,
+              key, keys, env, shell, sudo, impersonate]
+      risk_level: HIGH
+      category: SENSITIVE
+      override_read: true
+    # Words that change state even after a read verb ("get_config_set", "read_exec").
+    - words: [write, exec, execute, set, grant, cancel, put, patch]
+      risk_level: MEDIUM
+      category: GENERIC_WRITE
+      override_read: true
     - words: [refund, charge, transfer, pay, payout, withdraw, deposit, wire,
               purchase, buy, sell, trade, capture]
       risk_level: HIGH
@@ -49,6 +61,11 @@ rules:
 #                    but can't be checked (wrong type, too long), it HOLDS.
 #   action: allow  → auto-approve, but only if every condition matches with
 #                    the expected types. Never overrides always_hold.
+#                    An allow rule vouches for the whole call, so it is strict:
+#                    exact `tools` only (no tool_pattern); numbers must be real
+#                    numbers, not text; lt/lte needs a lower bound (gt/gte);
+#                    and any argument that has no condition and is not listed
+#                    in `other_args` means the rule does not match.
 #
 #   tools: [exact_names]  and/or  tool_pattern: "regex on the tool name"
 #   when:  {argument.path: {operator: value}, ...}  — all must match.
@@ -98,8 +115,9 @@ argument_rules:
   #   action: allow
   #   tools: [refund_payment]
   #   when:
-  #     amount: {lte: 50}
+  #     amount: {gt: 0, lte: 50}
   #     currency: {in: [usd]}
+  #   other_args: [reason]        # arguments that may be present without a condition
   # - name: large-refund
   #   action: hold
   #   risk_level: HIGH

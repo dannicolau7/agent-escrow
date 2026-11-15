@@ -51,8 +51,9 @@ argument_rules:
     action: allow
     tools: [refund_payment]
     when:
-      amount: {lte: 50}
+      amount: {gt: 0, lte: 50}
       currency: {in: [usd]}
+    other_args: [reason]
   - name: large-refund
     action: hold
     risk_level: HIGH
@@ -274,7 +275,13 @@ def test_allow_never_overrides_always_hold(custom):
     [
         ({"amount": 20, "currency": "usd"}, "AUTO_APPROVE", "LOW"),
         ({"amount": 50, "currency": " USD "}, "AUTO_APPROVE", "LOW"),
-        ({"amount": "20", "currency": "usd"}, "AUTO_APPROVE", "LOW"),
+        ({"amount": 20, "currency": "usd", "reason": "duplicate charge"}, "AUTO_APPROVE", "LOW"),
+        # An allow rule takes real numbers only, a lower bound, and no unchecked arguments.
+        ({"amount": "20", "currency": "usd"}, "HOLD", "HIGH"),
+        ({"amount": "٤٩", "currency": "usd"}, "HOLD", "HIGH"),
+        ({"amount": -5000, "currency": "usd"}, "HOLD", "HIGH"),
+        ({"amount": 0, "currency": "usd"}, "HOLD", "HIGH"),
+        ({"amount": 20, "currency": "usd", "to_account": "someone-else"}, "HOLD", "HIGH"),
         ({"amount": 20, "currency": "eur"}, "HOLD", "HIGH"),  # allow doesn't match; name rule
         ({"amount": 75, "currency": "usd"}, "HOLD", "HIGH"),
         ({"amount": 50.01, "currency": "usd"}, "HOLD", "HIGH"),
@@ -429,3 +436,35 @@ async def test_mcp_hold_rule_on_read_tool(client):
     assert pending[0]["risk_level"] == "HIGH"
     created = next(a for a in db.get_audit_log(limit=5) if a["event_type"] == "action.created")
     assert created["detail"]["rule"] == "prod"
+
+
+# --- Allow rules vouch for the whole call, so they are strict ----------------------
+
+
+@pytest.mark.parametrize(
+    ("rule", "message"),
+    [
+        ("{name: r, action: allow, tool_pattern: refund, when: {amount: {gt: 0, lt: 50}}}", "exact tool names"),
+        ("{name: r, action: allow, tools: [refund_payment], when: {amount: {lt: 50}}}", "lower bound"),
+        ("{name: r, action: allow, tools: [refund_payment], when: {amount: {lte: 50}}}", "lower bound"),
+        ("{name: r, action: hold, tools: [x], other_args: [a], when: {a: {exists: true}}}", "only applies to allow"),
+        ("{name: r, action: allow, tools: [x], other_args: a, when: {a: {exists: true}}}", "list of argument names"),
+    ],
+)
+def test_unsafe_allow_rules_are_refused_at_load(tmp_path, rule, message):
+    with pytest.raises(PolicyError, match=message):
+        _use_policy(tmp_path, f"argument_rules:\n  - {rule}\n")
+
+
+def test_allow_rule_does_not_reach_other_tools_with_a_similar_name(custom):
+    """Regression: a pattern-based allow rule approved these without review."""
+    args = {"amount": 1, "currency": "usd"}
+    for name in ("refund_and_delete_account", "delete_refund_records", "refund_payment_v2"):
+        assert _action(name, args) == "HOLD", name
+    assert _action("refund_payment", args) == "AUTO_APPROVE"
+
+
+def test_allow_rule_still_applies_in_listed_mode(custom, monkeypatch):
+    monkeypatch.setenv("ESCROW_AUTO_APPROVE", "listed")
+    assert _action("refund_payment", {"amount": 20, "currency": "usd"}) == "AUTO_APPROVE"  # explicit rule
+    assert _action("get_user", {"id": 1}) == "HOLD"  # a name is not enough
