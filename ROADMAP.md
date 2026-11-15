@@ -1,6 +1,6 @@
 # AgentEscrow — Roadmap & Tracking
 
-_Last updated: 2026-11-15_
+_Last updated: 2026-11-15 (protocol findings added)_
 
 ## Now
 
@@ -27,8 +27,12 @@ _Last updated: 2026-11-15_
 
 ### Found in that test, not fixed yet
 
-- [ ] **Protocol version.** Through the proxy the SDK client negotiated protocol `2025-11-25`; directly against the server it used `2026-07-28`. Find out what the proxy does not pass through for the newer version.
-- [ ] **Session close.** The client's `DELETE /mcp` at the end of a session gets 405. Forward it to the upstream, or answer it, so sessions end cleanly.
+- [ ] **Protocol version `2026-07-28` is not supported; clients fall back.** Investigated on 2026-11-15 from the official Python SDK's source and a recording of what its client sends. The specification itself was not read (the site was unreachable from the session), so confirm against it before building.
+  - **Cause of the fallback:** the client first sends `server/discover`. The proxy refuses it (not in `PASSTHROUGH_METHODS`), the client takes that to mean "older server", and retries with the `initialize` handshake, which works.
+  - **How the newer version differs:** every request stands alone. No `initialize`, no `Mcp-Session-Id`, nothing to close. Each POST carries `Mcp-Protocol-Version` and `Mcp-Method`, and a `tools/call` also carries `Mcp-Name` with the tool's name. Client details travel in `params._meta`.
+  - **What support would need:** (1) allow `server/discover`, which is read-only; (2) send `Mcp-Method` and `Mcp-Name` upstream, since the forwarder passes only the session and version headers today (inferred from the code, not tested); (3) **write `Mcp-Name` from the body the proxy classified, never copy the agent's header**. Otherwise a call could say `get_user` in the body and `delete_user` in the header.
+  - **Open design question:** with no sessions, decide how `wait` and `async` hold modes should behave, and whether `escrow_get_result` still identifies the submitting agent well enough.
+- [ ] **Older-mode requests the proxy refuses.** Only `POST /mcp` exists. The client's `DELETE /mcp` (close session) gets 405, so sessions are not closed upstream; and its `GET /mcp` (a channel for server-initiated messages) is not supported either. Harmless in the test. Forward the close, and decide whether server-initiated messages should pass at all.
 - [ ] **Regex cost.** Argument-rule patterns run on agent-supplied text up to 100,000 characters. A slow pattern could stall the single instance. Measure, and add a time or length guard.
 - [ ] **Independent security review** before a customer relies on it. The checks so far were targeted probing, not a penetration test.
 
