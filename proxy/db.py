@@ -322,6 +322,20 @@ def insert_audit_log(
         conn.commit()
 
 
+def audit_head() -> dict[str, Any]:
+    """The latest hashed audit row: {"last_id", "hash", "rows"}. `hash` is None if there is none."""
+    with _lock:
+        last = (
+            get_conn()
+            .execute("SELECT id, hash FROM audit_log WHERE hash IS NOT NULL ORDER BY id DESC LIMIT 1")
+            .fetchone()
+        )
+        rows = get_conn().execute("SELECT COUNT(*) FROM audit_log WHERE hash IS NOT NULL").fetchone()[0]
+    if last is None:
+        return {"last_id": None, "hash": None, "rows": 0}
+    return {"last_id": last[0], "hash": last[1], "rows": rows}
+
+
 def verify_audit_chain() -> dict[str, Any]:
     """Recompute the chain.  Returns {"ok", "checked", "first_bad_id"}."""
     rows = _query("SELECT * FROM audit_log ORDER BY id ASC")

@@ -30,6 +30,10 @@ Set `DASHBOARD_URL` to the public `https://…/ui/` address so notification link
 fly launch --no-deploy                     # uses the Dockerfile
 fly volumes create escrow_data --size 1
 fly secrets set ESCROW_KEYS='…' MCP_UPSTREAM_URL='…' MCP_UPSTREAM_TOKEN='…' ESCROW_AUDIT_KEY='…'
+# Recommended: ESCROW_AUTO_APPROVE=listed, with the upstream's read-only tools added to
+# always_allow in proxy/policies.yaml. The default trusts tool names to mean what they say.
+# Optional signed audit checkpoints: mount an Ed25519 key as a file and set
+# ESCROW_AUDIT_SIGNING_KEY to its path (see "Signed checkpoints" in README.md).
 ```
 
 In `fly.toml` mount the volume at `/data`, set `internal_port = 4000`, and **keep exactly one machine** (`fly scale count 1`), because of the single-instance limit below. Fly terminates TLS for you.
@@ -41,6 +45,10 @@ Point the agent's MCP client at `https://<host>/mcp` (Streamable HTTP) with head
 Client request timeouts matter: many clients give up after ~60 s, but a review can take minutes. Either raise the client's timeout above `ESCROW_HOLD_TIMEOUT` (or enable its reset-on-progress option; the proxy sends progress heartbeats), or set `ESCROW_HOLD_MODE=async` so held calls answer immediately and the agent polls `escrow_get_result`. See "Client timeouts" in the README.
 
 The upstream must speak MCP over Streamable HTTP. Servers that only support stdio need an HTTP bridge in front of them (for example `mcp-proxy` / `supergateway`).
+
+## Policies
+
+Rules live in `proxy/policies.yaml` and are baked into the image. To change them, edit the file and rebuild (`docker compose up -d --build`), or mount your own file over `/app/proxy/policies.yaml`. Policies are read at startup: an invalid file (unknown key or operator, bad regex, an `allow` argument rule without `tools`) makes the proxy refuse to start, and the error names the rule. See README → "Argument rules".
 
 ## Operational limits — read before going to production
 

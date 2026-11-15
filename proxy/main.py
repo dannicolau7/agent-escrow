@@ -22,8 +22,8 @@ from .routes_ui import router as ui_router
 
 # MCP methods that are passed straight through without escrow.  These are the
 # handshake, discovery and read-only methods of the MCP spec.  Anything else
-# except "tools/call" (escrowed) and "notifications/*" is refused, so a new or
-# made-up method can't be used to slip past the escrow.
+# except "tools/call" (escrowed) and the notifications listed below is refused, so
+# a new or made-up method can't be used to slip past the escrow.
 PASSTHROUGH_METHODS = {
     "initialize",
     "ping",
@@ -34,6 +34,14 @@ PASSTHROUGH_METHODS = {
     "prompts/list",
     "prompts/get",
     "completion/complete",
+}
+# Notifications a client may send, per the MCP spec. A bare "notifications/" prefix is not
+# enough: an upstream could act on an invented method that happens to start with it.
+PASSTHROUGH_NOTIFICATIONS = {
+    "notifications/initialized",
+    "notifications/cancelled",
+    "notifications/progress",
+    "notifications/roots/list_changed",
 }
 # Passthrough methods worth an audit entry (they return data to the agent).
 _AUDITED_PASSTHROUGH = {"resources/read", "prompts/get"}
@@ -129,7 +137,7 @@ async def handle_mcp(request: Request):
     client_ip = request.client.host if request.client else None
 
     if method != "tools/call":
-        if not (method in PASSTHROUGH_METHODS or method.startswith("notifications/")):
+        if not (method in PASSTHROUGH_METHODS or method in PASSTHROUGH_NOTIFICATIONS):
             db.insert_audit_log("rpc.refused", actor=submitter, ip_address=client_ip, detail={"method": method})
             log.warning("rpc.refused", extra={"method": method, "actor": submitter})
             return _rpc_error(rpc_id, -32601, f"Method not allowed through escrow: {method}")
@@ -175,7 +183,7 @@ async def handle_mcp(request: Request):
     if (
         settings.hold_mode() == "wait"
         and "text/event-stream" in request.headers.get("accept", "")
-        and classify_tool_call(params["name"])["action"] == "HOLD"
+        and classify_tool_call(params["name"], args)["action"] == "HOLD"
     ):
         meta = params.get("_meta")
         token = meta.get("progressToken") if isinstance(meta, dict) else None

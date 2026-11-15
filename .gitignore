@@ -26,3 +26,5 @@ escrow_scrape_key.txt
 # Local dev env and phone access note
 .env.dev
 .phone-access.txt
+audit-signing.key*
+*.key

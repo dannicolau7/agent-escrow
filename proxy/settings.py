@@ -43,6 +43,22 @@ def hold_mode() -> str:
     return mode if mode in ("wait", "async") else "wait"
 
 
+AUTO_APPROVE_MODES = ("verbs", "listed")
+
+
+def auto_approve_mode() -> str:
+    """Which tool calls may run without a person (ESCROW_AUTO_APPROVE).
+
+    "verbs"   (default) names on `always_allow`, plus names that start with a read verb
+              ("get_user"). Convenient, but it trusts tool names to mean what they say.
+    "listed"  only names on `always_allow`. Everything else is held, whatever it is called.
+
+    An unrecognised value is treated as "listed": when in doubt, hold.
+    """
+    mode = os.environ.get("ESCROW_AUTO_APPROVE", "verbs").strip().lower()
+    return mode if mode in AUTO_APPROVE_MODES else "listed"
+
+
 def heartbeat_seconds() -> float:
     try:
         return max(1.0, float(os.environ.get("ESCROW_HEARTBEAT_SECONDS", "15")))
@@ -70,6 +86,19 @@ class ConfigError(RuntimeError):
 
 def validate_startup() -> None:
     """Fail fast on unsafe production configuration."""
+    from . import checkpoint  # local import to avoid a cycle
+
+    # In every mode: a configured signing key that cannot be loaded is a mistake to fix now,
+    # not when an auditor asks for a checkpoint.
+    try:
+        checkpoint.validate_startup()
+    except checkpoint.CheckpointError as exc:
+        raise ConfigError(f"Refusing to start: {exc}.") from exc
+    raw_mode = os.environ.get("ESCROW_AUTO_APPROVE", "verbs").strip().lower()
+    if raw_mode not in AUTO_APPROVE_MODES:
+        raise ConfigError(
+            f"Refusing to start: ESCROW_AUTO_APPROVE must be one of {', '.join(AUTO_APPROVE_MODES)}, not {raw_mode!r}."
+        )
     if is_dev():
         return
     from .auth import load_keys  # local import to avoid a cycle
