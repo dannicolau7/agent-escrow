@@ -11,6 +11,7 @@ from pydantic import BaseModel
 from . import checkpoint as _checkpoint
 from . import db
 from . import metrics as _metrics
+from . import receipt as _receipt
 from .auth import require_admin, require_approver, require_viewer
 from .db import get_audit_log, get_pending_actions, get_resolved_history
 from .events import broadcast, subscribe
@@ -164,6 +165,35 @@ def audit_checkpoint(request: Request):
     except _checkpoint.CheckpointError as exc:
         log.error("audit.checkpoint_failed", extra={"reason": str(exc)})
         raise HTTPException(status_code=500, detail="The audit checkpoint could not be signed") from exc
+
+
+@router.get("/api/actions/{action_id}/receipt", dependencies=[Depends(require_viewer)])
+def approval_receipt(action_id: str, request: Request):
+    """A signed statement that a reviewer approved this exact call.
+
+    For handing to whoever is asked to carry the action out. Only approved actions have one.
+    """
+    db.ensure_db()
+    if _checkpoint.signing_key_path() is None:
+        raise HTTPException(status_code=409, detail="No signing key is configured (ESCROW_AUDIT_SIGNING_KEY)")
+    action = db.get_action(action_id)
+    if action is None:
+        raise HTTPException(status_code=404, detail="Action not found")
+    try:
+        signed = _receipt.issue(action)
+    except _receipt.NoReceipt as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except _receipt.ReceiptError as exc:
+        log.error("receipt.failed", extra={"action_id": action_id, "reason": str(exc)})
+        raise HTTPException(status_code=500, detail="The receipt could not be signed") from exc
+    db.insert_audit_log(
+        "action.receipt_issued",
+        action_id=action_id,
+        actor=getattr(request.state, "key_label", None) or "unknown",
+        ip_address=request.client.host if request.client else None,
+        detail={"arguments_sha256": signed["arguments_sha256"]},
+    )
+    return signed
 
 
 @router.get("/api/audit/verify", dependencies=[Depends(require_admin)])
