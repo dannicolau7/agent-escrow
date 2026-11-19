@@ -80,7 +80,7 @@ See **[DEPLOY.md](DEPLOY.md)** for Docker Compose, HTTPS, Fly.io and the operati
 | `ESCROW_CORS_ORIGINS` | Comma-separated browser origins allowed to call the API (default: same origin; `localhost:3000` in dev) |
 | `ESCROW_AUTO_APPROVE` | `verbs` (default): tools on `always_allow`, or whose name starts with a read verb, run without review. `listed`: only tools on `always_allow` do; everything else is held. Use `listed` in production |
 | `ESCROW_AUDIT_KEY` | Secret for the audit hash chain. Stops someone with database access rebuilding it, but the log can then only be checked by someone who holds the secret |
-| `ESCROW_AUDIT_SIGNING_KEY` | Path to an Ed25519 private key for signed audit checkpoints, which an outsider can check with the public key |
+| `ESCROW_AUDIT_SIGNING_KEY` | Path to an Ed25519 private key for signed audit checkpoints and approval receipts, which an outsider can check with the public key |
 | `ESCROW_LOG_LEVEL` | JSON log level (default `INFO`) |
 | `DASHBOARD_URL`, `SLACK_WEBHOOK_URL`, `NOTIFICATION_WEBHOOK_URL`, `PAGERDUTY_ROUTING_KEY` | Notifications |
 
@@ -150,6 +150,7 @@ Shipped rules hold destructive SQL (`DROP`, `DELETE`, … → CRITICAL; `INSERT`
 | `GET` | `/api/audit/export?format=csv\|jsonl&since=&until=` | admin | Download the audit log with hashes |
 | `GET` | `/api/audit/verify` | admin | Recompute the audit hash chain |
 | `GET` | `/api/audit/checkpoint` | admin | Signed checkpoint of the audit log (needs `ESCROW_AUDIT_SIGNING_KEY`) |
+| `GET` | `/api/actions/{id}/receipt` | viewer | Signed receipt that a reviewer approved this exact call (needs `ESCROW_AUDIT_SIGNING_KEY`) |
 | `GET` | `/metrics` | viewer | Prometheus metrics |
 | `GET` | `/health` | public | Liveness check |
 | `GET` | `/docs` | public | Swagger UI |
@@ -181,6 +182,22 @@ curl -H "X-Api-Key: $ADMIN_KEY" http://127.0.0.1:4000/api/audit/checkpoint
 - **Hand checkpoints to someone outside, regularly.** A checkpoint proves what the server vouched for when it signed. Once it is held outside, the log cannot be rewritten before that point without the mismatch showing: a later export must still contain that row with that hash.
 - For a log an outsider can check row by row, leave `ESCROW_AUDIT_KEY` unset and rely on checkpoints. With both set, the checkpoint is still valid but the rows can only be re-checked by someone holding the secret; the checkpoint's `keyed_chain` field says which applies.
 - Issuing a checkpoint needs an admin key and is itself written to the audit log.
+
+### Approval receipts
+
+A receipt is a signed statement that a named reviewer approved one exact tool call. It is for handing to whoever is asked to carry the action out, so they can check a person approved it without trusting the agent's word.
+
+```bash
+curl -H "X-Api-Key: $VIEWER_KEY" http://127.0.0.1:4000/api/actions/$ACTION_ID/receipt > receipt.json
+python -m proxy.receipt verify receipt.json --pubkey audit-signing.key.pub --arguments call-arguments.json
+```
+
+- It names the action, the tool, the risk level, the agent's key label, the reviewer's key label and the times. It is signed with the same key as checkpoints.
+- **The arguments are not in it, only their SHA-256.** The receiver computes the same hash over the arguments it was sent (`--arguments`) and so confirms they are the ones that were approved. A receipt for a $250 payment does not verify against a $2,500 one.
+- Only an action a reviewer approved has a receipt. Calls that passed without review, and actions that were rejected, timed out or cancelled, have none.
+- The receiver must check it against a public key obtained from you separately. The key inside the receipt is a convenience and proves nothing.
+- A receipt does not say the action has run, that the approval was wise, or who the reviewer is beyond their key label. It is not an identity standard: the receiver has to choose to accept it.
+- Issuing one needs a viewer key or higher (not an agent key) and is written to the audit log.
 
 ## Reviewer dashboard
 

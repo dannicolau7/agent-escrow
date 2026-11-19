@@ -1,6 +1,6 @@
 # AgentEscrow — Roadmap & Tracking
 
-_Last updated: 2026-11-15 (protocol findings added)_
+_Last updated: 2026-11-19 (approval receipts added)_
 
 ## Now
 
@@ -35,6 +35,12 @@ _Last updated: 2026-11-15 (protocol findings added)_
 - [ ] **Older-mode requests the proxy refuses.** Only `POST /mcp` exists. The client's `DELETE /mcp` (close session) gets 405, so sessions are not closed upstream; and its `GET /mcp` (a channel for server-initiated messages) is not supported either. Harmless in the test. Forward the close, and decide whether server-initiated messages should pass at all.
 - [ ] **Regex cost.** Argument-rule patterns run on agent-supplied text up to 100,000 characters. A slow pattern could stall the single instance. Measure, and add a time or length guard.
 - [ ] **Independent security review** before a customer relies on it. The checks so far were targeted probing, not a penetration test.
+
+## Done the week of 2026-11-16
+
+- **Approval receipts:** `GET /api/actions/{id}/receipt` signs a statement that a named reviewer approved one exact call, with a hash of its arguments. `python -m proxy.receipt verify` checks it with the public key.
+  - [ ] **Let the agent fetch its own receipt.** Today a viewer key or higher is needed, so a person or a service hands it on. Add it to `escrow_get_result` (own actions only) once the design for agent-held proof is agreed.
+  - [ ] **Nobody accepts receipts yet.** They are our own format. A receiving service has to choose to check them; watch the agent-identity standards and map onto whichever settles.
 
 ## Next: test with a real agent (before building more)
 
