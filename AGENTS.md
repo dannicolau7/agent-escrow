@@ -32,6 +32,7 @@ Each one is covered by tests in `test_audit_fixes.py`, `test_hold_modes.py`, `te
 8. **Agent-supplied text is untrusted.** Escape it in Slack/HTML/Markdown (`notifications._slack_escape`, `esc()` in `web/index.html`). Never render it as HTML.
 9. **Hold modes** (`ESCROW_HOLD_MODE`). In `wait` mode a held call runs only inside the request that is waiting for it; if that request is cancelled (client disconnect, shutdown) the action is REJECTED. In `async` mode the approved call runs in the background from the stored request (`execute_approved_async`), and `escrow_get_result` only shows an action to the agent that submitted it (or an admin). Never execute an async action that is not `APPROVED`.
 10. **No secrets in URLs or logs.** `?api_key=` is accepted only on `/api/events`. Don't log keys, tokens or full tool arguments at INFO level.
+11. **Agent signatures** (`ESCROW_AGENT_SIGNATURES`, `proxy/agent_identity.py`). The check runs on the raw body before anything reads it. Every failure returns a reason and is audited; nothing an agent sends may raise. The one-time number is spent in the database, and only after the signature is good. A signing key counts only with the API key of the agent it is registered for. An unknown mode refuses to start. Signatures never replace holding a risky call.
 
 ## Project map
 
@@ -41,6 +42,7 @@ Each one is covered by tests in `test_audit_fixes.py`, `test_hold_modes.py`, `te
 | Hold / wait / execute | `proxy/proxy_engine.py` |
 | Upstream MCP client (Streamable HTTP, SSE) | `proxy/forwarder.py` |
 | Keys and roles | `proxy/auth.py` |
+| Agent signing keys, signature checks | `proxy/agent_identity.py` |
 | Risk classifier + rules | `proxy/config.py`, `proxy/arg_rules.py`, `proxy/policies.yaml` |
 | Storage, audit chain | `proxy/db.py` |
 | Reviewer API, export, metrics route | `proxy/routes_ui.py` |

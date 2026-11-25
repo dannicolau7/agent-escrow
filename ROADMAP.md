@@ -1,6 +1,6 @@
 # AgentEscrow — Roadmap & Tracking
 
-_Last updated: 2026-11-19 (approval receipts added)_
+_Last updated: 2026-11-25 (agent signatures added)_
 
 ## Now
 
@@ -35,6 +35,14 @@ _Last updated: 2026-11-19 (approval receipts added)_
 - [ ] **Older-mode requests the proxy refuses.** Only `POST /mcp` exists. The client's `DELETE /mcp` (close session) gets 405, so sessions are not closed upstream; and its `GET /mcp` (a channel for server-initiated messages) is not supported either. Harmless in the test. Forward the close, and decide whether server-initiated messages should pass at all.
 - [ ] **Regex cost.** Argument-rule patterns run on agent-supplied text up to 100,000 characters. A slow pattern could stall the single instance. Measure, and add a time or length guard.
 - [ ] **Independent security review** before a customer relies on it. The checks so far were targeted probing, not a penetration test.
+
+## Done the week of 2026-11-23
+
+- **Agent signatures:** with `ESCROW_AGENT_SIGNATURES=required` every `POST /mcp` must carry an HTTP Message Signature (RFC 9421, Ed25519) from a key registered for that agent. Unsigned, unknown, revoked, forged, altered, replayed and expired requests are refused, audited and alerted. `warn` records without refusing.
+  - [ ] **Dashboard view.** Refusals are in the audit log and alerts only. Show them, and the registered keys, in the dashboard.
+  - [ ] **Signing for agents not written in Python.** Only a Python helper exists. Add a small TypeScript one, or a local signing sidecar the agent sends through.
+  - [ ] **Key storage.** The private key is a file. An agent on a server should keep it in a key store that signs without giving the key out.
+  - [ ] **Tried with a real agent framework.** Checked with our own client only.
 
 ## Done the week of 2026-11-16
 

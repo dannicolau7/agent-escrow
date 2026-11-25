@@ -354,8 +354,12 @@ async def test_sse_action_resolved_event(client):
                 },
             )
         )
-        await asyncio.sleep(0.05)
-        pending = (await client.get("/api/pending")).json()
+        pending = []
+        for _ in range(100):  # wait for the held action instead of guessing how long it takes
+            pending = (await client.get("/api/pending")).json()
+            if pending:
+                break
+            await asyncio.sleep(0.02)
         await client.post("/api/resolve", json={"action_id": pending[0]["id"], "decision": "APPROVED"})
         await t
 

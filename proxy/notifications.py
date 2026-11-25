@@ -105,6 +105,35 @@ async def notify_action_resolved(
         )
 
 
+async def notify_agent_signature(*, reason: str, actor: str, keyid: str, enforced: bool) -> None:
+    """Tell whoever is watching that a request to /mcp failed its signature check.
+
+    `actor` is the label of the API key the request carried. `keyid` came from the request and
+    has been checked for form, and both are escaped for Slack all the same.
+    """
+    outcome = "refused" if enforced else "let through (warn mode)"
+    async with _client() as client:
+        slack_url = os.environ.get("SLACK_WEBHOOK_URL")
+        if slack_url:
+            text = (
+                f"🚫 *Agent signature check failed* ({outcome})\n"
+                f"*Agent key:* `{_slack_escape(actor)}`\n"
+                f"*Signing key claimed:* `{_slack_escape(keyid or 'none')}`\n"
+                f"*Why:* {_slack_escape(reason)}"
+            )
+            await _post(client, "slack", slack_url, {"text": text}, "")
+        hook_url = os.environ.get("NOTIFICATION_WEBHOOK_URL")
+        if hook_url:
+            payload = {
+                "event": "agent.signature_rejected" if enforced else "agent.signature_warning",
+                "actor": actor,
+                "keyid": keyid,
+                "reason": reason,
+                "enforced": enforced,
+            }
+            await _post(client, "webhook", hook_url, payload, "")
+
+
 async def _slack(client, action_id, tool_name, risk_level, category, reason, dashboard_url):
     url = os.environ.get("SLACK_WEBHOOK_URL")
     if not url:

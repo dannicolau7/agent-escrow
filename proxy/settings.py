@@ -59,6 +59,33 @@ def auto_approve_mode() -> str:
     return mode if mode in AUTO_APPROVE_MODES else "listed"
 
 
+AGENT_SIGNATURE_MODES = ("off", "warn", "required")
+
+
+def agent_signature_mode() -> str:
+    """Whether agents must sign their requests (ESCROW_AGENT_SIGNATURES).
+
+    "off"       (default) signatures are ignored.
+    "warn"      a missing or bad signature is recorded and reported; the call goes on.
+    "required"  a missing or bad signature is refused.
+
+    An unrecognised value is treated as "required": when in doubt, refuse. Startup refuses
+    such a value outright, so this only matters if the setting changes underneath a
+    running process.
+    """
+    mode = os.environ.get("ESCROW_AGENT_SIGNATURES", "off").strip().lower()
+    return mode if mode in AGENT_SIGNATURE_MODES else "required"
+
+
+def public_authority() -> str:
+    """The host agents sign, when it is not the Host header this process sees.
+
+    Behind a proxy that rewrites the Host header, set ESCROW_PUBLIC_AUTHORITY to the host
+    (and port, if not the default) that agents call.
+    """
+    return os.environ.get("ESCROW_PUBLIC_AUTHORITY", "").strip().lower()
+
+
 def heartbeat_seconds() -> float:
     try:
         return max(1.0, float(os.environ.get("ESCROW_HEARTBEAT_SECONDS", "15")))
@@ -98,6 +125,12 @@ def validate_startup() -> None:
     if raw_mode not in AUTO_APPROVE_MODES:
         raise ConfigError(
             f"Refusing to start: ESCROW_AUTO_APPROVE must be one of {', '.join(AUTO_APPROVE_MODES)}, not {raw_mode!r}."
+        )
+    raw_signatures = os.environ.get("ESCROW_AGENT_SIGNATURES", "off").strip().lower()
+    if raw_signatures not in AGENT_SIGNATURE_MODES:
+        raise ConfigError(
+            "Refusing to start: ESCROW_AGENT_SIGNATURES must be one of "
+            f"{', '.join(AGENT_SIGNATURE_MODES)}, not {raw_signatures!r}."
         )
     if is_dev():
         return
