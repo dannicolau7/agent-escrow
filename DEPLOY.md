@@ -43,6 +43,8 @@ In `fly.toml` mount the volume at `/data`, set `internal_port = 4000`, and **kee
 
 Point the agent's MCP client at `https://<host>/mcp` (Streamable HTTP) with header `Authorization: Bearer <agent key>`.
 
+To make each agent prove itself on every request, register a signing key for it (`python -m proxy.agent_identity keygen PATH --label <agent label>`, run where the database is), have the agent sign its requests, and set `ESCROW_AGENT_SIGNATURES=warn`, then `required` once the warnings stop. Behind a proxy that rewrites the `Host` header set `ESCROW_PUBLIC_AUTHORITY` to the host agents call. See "Agent signatures" in the README.
+
 Client request timeouts matter: many clients give up after ~60 s, but a review can take minutes. Either raise the client's timeout above `ESCROW_HOLD_TIMEOUT` (or enable its reset-on-progress option; the proxy sends progress heartbeats), or set `ESCROW_HOLD_MODE=async` so held calls answer immediately and the agent polls `escrow_get_result`. See "Client timeouts" in the README.
 
 The upstream must speak MCP over Streamable HTTP. Servers that only support stdio need an HTTP bridge in front of them (for example `mcp-proxy` / `supergateway`).

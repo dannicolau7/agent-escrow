@@ -80,6 +80,8 @@ See **[DEPLOY.md](DEPLOY.md)** for Docker Compose, HTTPS, Fly.io and the operati
 | `ESCROW_CORS_ORIGINS` | Comma-separated browser origins allowed to call the API (default: same origin; `localhost:3000` in dev) |
 | `ESCROW_AUTO_APPROVE` | `verbs` (default): tools on `always_allow`, or whose name starts with a read verb, run without review. `listed`: only tools on `always_allow` do; everything else is held. Use `listed` in production |
 | `ESCROW_AUDIT_KEY` | Secret for the audit hash chain. Stops someone with database access rebuilding it, but the log can then only be checked by someone who holds the secret |
+| `ESCROW_AGENT_SIGNATURES` | `off` (default), `warn` or `required`: whether each agent must sign every request with its own key. See [Agent signatures](#agent-signatures) |
+| `ESCROW_PUBLIC_AUTHORITY` | The host (and port) agents call, if a proxy in front rewrites the `Host` header. Used when checking agent signatures |
 | `ESCROW_AUDIT_SIGNING_KEY` | Path to an Ed25519 private key for signed audit checkpoints and approval receipts, which an outsider can check with the public key |
 | `ESCROW_LOG_LEVEL` | JSON log level (default `INFO`) |
 | `DASHBOARD_URL`, `SLACK_WEBHOOK_URL`, `NOTIFICATION_WEBHOOK_URL`, `PAGERDUTY_ROUTING_KEY` | Notifications |
@@ -199,6 +201,47 @@ python -m proxy.receipt verify receipt.json --pubkey audit-signing.key.pub --arg
 - A receipt does not say the action has run, that the approval was wise, or who the reviewer is beyond their key label. It is not an identity standard: the receiver has to choose to accept it.
 - Issuing one needs a viewer key or higher (not an agent key) and is written to the audit log.
 
+## Agent signatures
+
+An API key says "someone who holds this key". It travels with every request, and whoever copies it is that agent. With signatures on, each agent also holds a private key that never leaves it and signs every request. The proxy checks the signature against the public key registered for that agent before it looks at the request.
+
+```bash
+python -m proxy.agent_identity keygen billing.key --label billing   # label = the agent's label in ESCROW_KEYS
+export ESCROW_AGENT_SIGNATURES=warn        # see who would be refused, refuse nobody
+export ESCROW_AGENT_SIGNATURES=required    # then refuse
+python -m proxy.agent_identity list
+python -m proxy.agent_identity revoke KEYID --reason "laptop lost"   # takes effect at once
+```
+
+The agent adds three headers to each `POST /mcp` (an HTTP Message Signature, RFC 9421, Ed25519). `proxy.agent_identity.sign_request(...)` builds them in Python; `scripts/demo_agent.py` uses it when `ESCROW_AGENT_SIGNING_KEY` (path to the private key) and `ESCROW_AGENT_KEYID` are set.
+
+```
+Content-Digest:  sha-256=:<base64 SHA-256 of the body>:
+Signature-Input: sig1=("@method" "@authority" "@path" "content-digest");created=…;expires=…;keyid="…";nonce="…";alg="ed25519";tag="agent-escrow"
+Signature:       sig1=:<base64 signature>:
+```
+
+Refused, written to the audit log (`agent.signature_rejected`) and sent to Slack and the webhook:
+
+| Request | Why it fails |
+|---|---|
+| Not signed | no signature |
+| Signed with a key nobody registered, or a revoked one | unknown or revoked key |
+| Someone else's signature under a real key id | does not match the registered key |
+| Body, host or path changed after signing | digest or signature no longer matches |
+| A captured request sent again | each signature works once |
+| Older than five minutes, or dated in the future | expired |
+| A real signing key with a different agent's API key | key is registered for another agent |
+
+What it does and does not do:
+
+- The API key is still required. A thief needs both the API key and the private key of the same agent.
+- It shows which agent sent a request and that it was not altered or replayed. It does **not** show the agent was not tricked: a manipulated agent signs a harmful request with its own valid key. Holding risky calls for a person covers that, and stays on in every mode.
+- A private key copied off the agent's machine works until you revoke it. Keep it where the agent's other secrets live, and one key per agent.
+- Clocks must agree to within a minute. Behind a proxy that rewrites `Host`, set `ESCROW_PUBLIC_AUTHORITY`.
+- `warn` records `agent.signature_warning` and lets the call through. Use it to roll out, not to run.
+- It is our own use of a public standard. An agent has to be given the key and the few lines that sign; no agent framework does this for you yet.
+
 ## Reviewer dashboard
 
 | Key | Action |
@@ -219,6 +262,7 @@ agent-escrow/
 │   ├── forwarder.py      # Streamable HTTP client for the upstream MCP server
 │   ├── routes_ui.py      # Reviewer API, audit export, metrics
 │   ├── auth.py           # API keys and roles
+│   ├── agent_identity.py # Agent signing keys and signature checks
 │   ├── config.py         # Risk classifier
 │   ├── arg_rules.py      # Argument rules (hold/allow on arguments)
 │   ├── policies.yaml     # Classification rules

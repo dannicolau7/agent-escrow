@@ -4,14 +4,19 @@ Run (with `make dev` running):  python scripts/demo_agent.py
 Then approve / reject the held calls at http://127.0.0.1:4000/ui/ (J / K keys).
 
 Env: ESCROW_URL (default http://127.0.0.1:4000), ESCROW_AGENT_KEY (blank in dev).
+To sign every request (ESCROW_AGENT_SIGNATURES on the proxy): ESCROW_AGENT_SIGNING_KEY (path to
+the agent's private key) and ESCROW_AGENT_KEYID (printed when the key was registered).
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import sys
 import time
+from pathlib import Path
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -19,6 +24,8 @@ BASE = os.environ.get("ESCROW_URL", "http://127.0.0.1:4000").rstrip("/")
 URL = BASE + "/mcp"
 KEY = os.environ.get("ESCROW_AGENT_KEY", "")
 HEADERS = {"authorization": f"Bearer {KEY}"} if KEY else {}
+SIGNING_KEY = os.environ.get("ESCROW_AGENT_SIGNING_KEY", "")
+KEYID = os.environ.get("ESCROW_AGENT_KEYID", "")
 
 CALLS = [
     ("get_user", {"id": 42}),
@@ -33,9 +40,15 @@ async def rpc(client: httpx.AsyncClient, rid: int, method: str, params: dict | N
     headers = dict(HEADERS)
     if session:
         headers["mcp-session-id"] = session
-    r = await client.post(
-        URL, json={"jsonrpc": "2.0", "id": rid, "method": method, "params": params or {}}, headers=headers
-    )
+    body = json.dumps({"jsonrpc": "2.0", "id": rid, "method": method, "params": params or {}}).encode()
+    headers["content-type"] = "application/json"
+    if SIGNING_KEY and KEYID:
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+        from proxy.agent_identity import sign_request
+
+        target = urlsplit(URL)
+        headers.update(sign_request(Path(SIGNING_KEY).read_bytes(), KEYID, "POST", target.netloc, target.path, body))
+    r = await client.post(URL, content=body, headers=headers)
     r.raise_for_status()
     return r.json(), r.headers.get("mcp-session-id")
 

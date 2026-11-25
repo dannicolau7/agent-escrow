@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -11,12 +12,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import db, logs, settings
+from . import agent_identity, db, logs, settings
 from .auth import api_key_middleware, require_agent
 from .config import classify_tool_call, load_policy
 from .events import broadcast
 from .forwarder import forward_full
 from .logs import log
+from .notifications import notify_agent_signature, schedule
 from .proxy_engine import RESULT_TOOL, RESULT_TOOL_DEFINITION, expire_async_holds, get_result, process_mcp_call
 from .routes_ui import router as ui_router
 
@@ -118,10 +120,47 @@ def _rpc_error(rpc_id, code: int, message: str) -> dict:
     return {"jsonrpc": "2.0", "id": rpc_id, "error": {"code": code, "message": message}}
 
 
+def _check_agent_signature(request: Request, raw: bytes) -> JSONResponse | None:
+    """Check the request's signature. Returns the refusal to send, or None to go on.
+
+    Runs before the body is looked at: an unsigned or forged request never reaches the
+    classifier, the queue or the upstream.
+    """
+    mode = settings.agent_signature_mode()
+    if mode == "off":
+        return None
+    actor = getattr(request.state, "key_label", None) or "unknown"
+    authority = settings.public_authority() or request.headers.get("host", "")
+    problem = agent_identity.verify(
+        request.method, authority, request.url.path, raw, request.headers, actor, int(time.time())
+    )
+    if problem is None:
+        return None
+    enforced = mode == "required"
+    keyid = agent_identity.claimed_keyid(request.headers)
+    db.insert_audit_log(
+        "agent.signature_rejected" if enforced else "agent.signature_warning",
+        actor=actor,
+        ip_address=request.client.host if request.client else None,
+        detail={"reason": problem, "keyid": keyid, "enforced": enforced},
+    )
+    log.warning(
+        "agent.signature_failed", extra={"actor": actor, "keyid": keyid, "reason": problem, "enforced": enforced}
+    )
+    schedule(notify_agent_signature(reason=problem, actor=actor, keyid=keyid, enforced=enforced))
+    if not enforced:
+        return None
+    return JSONResponse(status_code=401, content={"detail": f"Agent signature check failed: {problem}."})
+
+
 @app.post("/mcp", dependencies=[Depends(require_agent)])
 async def handle_mcp(request: Request):
+    raw = await request.body()
+    refusal = _check_agent_signature(request, raw)
+    if refusal is not None:
+        return refusal
     try:
-        payload = await request.json()
+        payload = json.loads(raw)
     except Exception:
         return _rpc_error(None, -32700, "Parse error")
 

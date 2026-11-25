@@ -6,6 +6,7 @@ import json
 import os as _os
 import sqlite3
 import threading
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -84,6 +85,20 @@ def ensure_db() -> None:
                 created_at  TEXT NOT NULL,
                 prev_hash   TEXT,
                 hash        TEXT
+            );
+            CREATE TABLE IF NOT EXISTS agent_keys (
+                keyid          TEXT PRIMARY KEY,
+                label          TEXT NOT NULL,
+                public_key     TEXT NOT NULL,
+                created_at     TEXT NOT NULL,
+                revoked_at     TEXT,
+                revoked_reason TEXT
+            );
+            CREATE TABLE IF NOT EXISTS agent_nonces (
+                keyid      TEXT NOT NULL,
+                nonce      TEXT NOT NULL,
+                expires_at INTEGER NOT NULL,
+                PRIMARY KEY (keyid, nonce)
             );
             CREATE INDEX IF NOT EXISTS idx_audit_log_action_id  ON audit_log(action_id);
             CREATE INDEX IF NOT EXISTS idx_audit_log_event_type ON audit_log(event_type);
@@ -239,6 +254,61 @@ def reject_stale_pending(reason: str) -> list[str]:
         )
         conn.commit()
     return ids
+
+
+# ---------------------------------------------------------------------------
+# Agent signing keys
+# ---------------------------------------------------------------------------
+
+
+def add_agent_key(keyid: str, label: str, public_key: str) -> bool:
+    """Register a public key. False if that key is already registered."""
+    conn = get_conn()
+    with _lock:
+        cur = conn.execute(
+            "INSERT OR IGNORE INTO agent_keys (keyid, label, public_key, created_at) VALUES (?, ?, ?, ?)",
+            (keyid, label, public_key, _utcnow()),
+        )
+        conn.commit()
+    return cur.rowcount > 0
+
+
+def get_agent_key(keyid: str) -> dict[str, Any] | None:
+    rows = _query("SELECT * FROM agent_keys WHERE keyid = ?", (keyid,))
+    return dict(rows[0]) if rows else None
+
+
+def list_agent_keys() -> list[dict[str, Any]]:
+    return [dict(r) for r in _query("SELECT * FROM agent_keys ORDER BY created_at")]
+
+
+def revoke_agent_key(keyid: str, reason: str) -> bool:
+    """Revoke a key that is in use. False if there is no such key, or it is already revoked."""
+    conn = get_conn()
+    with _lock:
+        cur = conn.execute(
+            "UPDATE agent_keys SET revoked_at = ?, revoked_reason = ? WHERE keyid = ? AND revoked_at IS NULL",
+            (_utcnow(), reason, keyid),
+        )
+        conn.commit()
+    return cur.rowcount > 0
+
+
+def use_agent_nonce(keyid: str, nonce: str, expires_at: int) -> bool:
+    """Record that a signed request was used. False if it was used before.
+
+    The database decides: the primary key lets exactly one request through, even if two
+    arrive together. Nonces past their expiry are cleared as new ones come in.
+    """
+    conn = get_conn()
+    with _lock:
+        conn.execute("DELETE FROM agent_nonces WHERE expires_at < ?", (int(time.time()),))
+        cur = conn.execute(
+            "INSERT OR IGNORE INTO agent_nonces (keyid, nonce, expires_at) VALUES (?, ?, ?)",
+            (keyid, nonce, int(expires_at)),
+        )
+        conn.commit()
+    return cur.rowcount > 0
 
 
 # Internal columns never returned by the reviewer API.

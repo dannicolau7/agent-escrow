@@ -15,5 +15,7 @@ for var in (
     "ESCROW_AUDIT_KEY",
     "ESCROW_AUDIT_SIGNING_KEY",
     "ESCROW_AUTO_APPROVE",
+    "ESCROW_AGENT_SIGNATURES",
+    "ESCROW_PUBLIC_AUTHORITY",
 ):
     os.environ.pop(var, None)
